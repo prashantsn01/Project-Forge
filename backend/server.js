@@ -1,8 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const archiver = require('archiver');
-const https = require('https');
 const path = require('path');
+const Groq = require('groq-sdk');
 require('dotenv').config();
 
 const app = express();
@@ -11,43 +11,7 @@ const PORT = process.env.PORT || 3001;
 app.use(cors({ origin: process.env.CLIENT_URL || '*' }));
 app.use(express.json({ limit: '4mb' }));
 
-function nvidiaRequest(apiKey, body) {
-  return new Promise((resolve, reject) => {
-    const bodyStr = JSON.stringify(body);
-    const options = {
-      hostname: 'integrate.api.nvidia.com',
-      path: '/v1/chat/completions',
-      method: 'POST',
-      timeout: 120000,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Length': Buffer.byteLength(bodyStr)
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        resolve({
-          ok: res.statusCode < 400,
-          status: res.statusCode,
-          json: () => JSON.parse(data)
-        });
-      });
-    });
-
-    req.on('error', reject);
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('Request timed out after 120s'));
-    });
-
-    req.write(bodyStr);
-    req.end();
-  });
-}
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 app.post('/api/generate', async (req, res) => {
   const { description, stack, features, level, commentMode } = req.body;
@@ -56,14 +20,22 @@ app.post('/api/generate', async (req, res) => {
     return res.status(400).json({ error: 'description and stack are required' });
   }
 
-  const apiKey = process.env.NVIDIA_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: 'NVIDIA_API_KEY not configured on server' });
+  if (!process.env.GROQ_API_KEY) {
+    return res.status(500).json({ error: 'GROQ_API_KEY not configured on server' });
   }
 
   const featList = (features || []).join(', ') || 'auth, REST API, database';
-  const levelMap = { '1': '1st year (clean, well-commented fundamentals)', '2': '2nd year (design patterns)', '3': '3rd year (industry architecture)', '4': 'Final year (production-grade)' };
-  const commentMap = { learning: 'every line explained with why, not just what', standard: 'key architectural decisions only', clean: 'professional minimal comments' };
+  const levelMap = {
+    '1': '1st year (clean, well-commented fundamentals)',
+    '2': '2nd year (design patterns)',
+    '3': '3rd year (industry architecture)',
+    '4': 'Final year (production-grade)'
+  };
+  const commentMap = {
+    learning: 'every line explained with why, not just what',
+    standard: 'key architectural decisions only',
+    clean: 'professional minimal comments'
+  };
 
   const systemPrompt = `You are ProjectForge, an expert fullstack code generator for CS students. 
 You generate COMPLETE, RUNNABLE code — zero placeholders, zero TODOs, zero stubs.
@@ -114,10 +86,10 @@ RULES:
 
   try {
     console.log('→ Request received:', description.slice(0, 60));
-    console.log('→ Calling NVIDIA NIM API (deepseek-v4-flash)...');
+    console.log('→ Calling Groq API (llama-3.3-70b-versatile)...');
 
-    const nvidiaRes = await nvidiaRequest(apiKey, {
-      model: 'deepseek-ai/deepseek-v4-flash',
+    const chatCompletion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
       max_tokens: 8192,
       temperature: 0.7,
       top_p: 0.95,
@@ -127,17 +99,9 @@ RULES:
       ]
     });
 
-    console.log('→ Got response from NVIDIA, status:', nvidiaRes.status);
+    console.log('→ Got response from Groq');
 
-    if (!nvidiaRes.ok) {
-      const err = nvidiaRes.json();
-      return res.status(502).json({ error: err.error?.message || 'NVIDIA NIM API error' });
-    }
-
-    const data = nvidiaRes.json();
-    console.log('→ Parsing JSON response...');
-    const rawText = data.choices?.[0]?.message?.content || '';
-
+    const rawText = chatCompletion.choices?.[0]?.message?.content || '';
     const cleaned = rawText.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim();
 
     let project;
@@ -152,7 +116,7 @@ RULES:
 
   } catch (err) {
     console.error('Generate error:', err.message);
-    if (err.message.includes('timed out')) {
+    if (err.message?.includes('timed out')) {
       return res.status(504).json({ error: 'Generation timed out — please try again with a simpler description' });
     }
     res.status(500).json({ error: err.message });
@@ -188,6 +152,6 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`\n🔥 ProjectForge backend running on http://localhost:${PORT}`);
-  console.log(`   AI-powered project generation via NVIDIA NIM (DeepSeek V4 Flash)`);
-  console.log(`   Set NVIDIA_API_KEY in .env to enable generation\n`);
+  console.log(`   AI-powered project generation via Groq (llama-3.3-70b-versatile)`);
+  console.log(`   Set GROQ_API_KEY in .env to enable generation\n`);
 });
