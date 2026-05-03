@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const archiver = require('archiver');
+const https = require('https');
 const path = require('path');
 require('dotenv').config();
 
@@ -9,6 +10,44 @@ const PORT = process.env.PORT || 3001;
 
 app.use(cors({ origin: process.env.CLIENT_URL || '*' }));
 app.use(express.json({ limit: '4mb' }));
+
+function nvidiaRequest(apiKey, body) {
+  return new Promise((resolve, reject) => {
+    const bodyStr = JSON.stringify(body);
+    const options = {
+      hostname: 'integrate.api.nvidia.com',
+      path: '/v1/chat/completions',
+      method: 'POST',
+      timeout: 120000,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Length': Buffer.byteLength(bodyStr)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        resolve({
+          ok: res.statusCode < 400,
+          status: res.statusCode,
+          json: () => JSON.parse(data)
+        });
+      });
+    });
+
+    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('Request timed out after 120s'));
+    });
+
+    req.write(bodyStr);
+    req.end();
+  });
+}
 
 app.post('/api/generate', async (req, res) => {
   const { description, stack, features, level, commentMode } = req.body;
@@ -77,40 +116,25 @@ RULES:
     console.log('→ Request received:', description.slice(0, 60));
     console.log('→ Calling NVIDIA NIM API (deepseek-v4-flash)...');
 
-    const { Agent, fetch: undiciFetch } = require('undici');
-
-    const agent = new Agent({
-      headersTimeout: 120000,  // 120s to wait for headers
-      bodyTimeout: 120000,     // 120s to receive body
-      connectTimeout: 30000    // 30s to connect
+    const nvidiaRes = await nvidiaRequest(apiKey, {
+      model: 'deepseek-ai/deepseek-v4-flash',
+      max_tokens: 8192,
+      temperature: 0.7,
+      top_p: 0.95,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ]
     });
 
-    const nvidiaRes = await undiciFetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-      method: 'POST',
-      dispatcher: agent,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: 'deepseek-ai/deepseek-v4-flash',
-        max_tokens: 8192,
-        temperature: 0.7,
-        top_p: 0.95,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ]
-      })
-    });
     console.log('→ Got response from NVIDIA, status:', nvidiaRes.status);
 
     if (!nvidiaRes.ok) {
-      const err = await nvidiaRes.json().catch(() => ({}));
+      const err = nvidiaRes.json();
       return res.status(502).json({ error: err.error?.message || 'NVIDIA NIM API error' });
     }
 
-    const data = await nvidiaRes.json();
+    const data = nvidiaRes.json();
     console.log('→ Parsing JSON response...');
     const rawText = data.choices?.[0]?.message?.content || '';
 
@@ -127,9 +151,9 @@ RULES:
     res.json({ ok: true, project });
 
   } catch (err) {
-    console.error('Generate error:', err);
-    if (err?.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' || err?.cause?.code === 'UND_ERR_BODY_TIMEOUT') {
-      return res.status(504).json({ error: 'NVIDIA NIM took too long to respond — please try again' });
+    console.error('Generate error:', err.message);
+    if (err.message.includes('timed out')) {
+      return res.status(504).json({ error: 'Generation timed out — please try again with a simpler description' });
     }
     res.status(500).json({ error: err.message });
   }
