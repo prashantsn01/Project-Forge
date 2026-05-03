@@ -77,12 +77,17 @@ RULES:
     console.log('→ Request received:', description.slice(0, 60));
     console.log('→ Calling NVIDIA NIM API (deepseek-v4-flash)...');
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 55000); // 55s timeout
+    const { Agent, fetch: undiciFetch } = require('undici');
 
-    const nvidiaRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+    const agent = new Agent({
+      headersTimeout: 120000,  // 120s to wait for headers
+      bodyTimeout: 120000,     // 120s to receive body
+      connectTimeout: 30000    // 30s to connect
+    });
+
+    const nvidiaRes = await undiciFetch('https://integrate.api.nvidia.com/v1/chat/completions', {
       method: 'POST',
-      signal: controller.signal,
+      dispatcher: agent,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`
@@ -98,8 +103,6 @@ RULES:
         ]
       })
     });
-
-    clearTimeout(timeout);
     console.log('→ Got response from NVIDIA, status:', nvidiaRes.status);
 
     if (!nvidiaRes.ok) {
@@ -124,11 +127,10 @@ RULES:
     res.json({ ok: true, project });
 
   } catch (err) {
-    if (err.name === 'AbortError') {
-      console.error('→ Request timed out after 55s');
-      return res.status(504).json({ error: 'Generation timed out — try a simpler project description or fewer features' });
-    }
     console.error('Generate error:', err);
+    if (err?.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' || err?.cause?.code === 'UND_ERR_BODY_TIMEOUT') {
+      return res.status(504).json({ error: 'NVIDIA NIM took too long to respond — please try again' });
+    }
     res.status(500).json({ error: err.message });
   }
 });
