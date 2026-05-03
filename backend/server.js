@@ -17,9 +17,9 @@ app.post('/api/generate', async (req, res) => {
     return res.status(400).json({ error: 'description and stack are required' });
   }
 
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = process.env.NVIDIA_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'GROQ_API_KEY not configured on server' });
+    return res.status(500).json({ error: 'NVIDIA_API_KEY not configured on server' });
   }
 
   const featList = (features || []).join(', ') || 'auth, REST API, database';
@@ -74,29 +74,31 @@ RULES:
 - Generate at least 6 files for HTML stack, 10 for React stack, 9 for Spring stack.`;
 
   try {
-    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const nvidiaRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        max_tokens: 8000,
+        model: 'deepseek-ai/deepseek-v4-pro',
+        max_tokens: 16384,
+        temperature: 1,
+        top_p: 0.95,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        response_format: { type: 'json_object' }
+        extra_body: { chat_template_kwargs: { thinking: false } }
       })
     });
 
-    if (!groqRes.ok) {
-      const err = await groqRes.json().catch(() => ({}));
-      return res.status(502).json({ error: err.error?.message || 'Groq API error' });
+    if (!nvidiaRes.ok) {
+      const err = await nvidiaRes.json().catch(() => ({}));
+      return res.status(502).json({ error: err.error?.message || 'NVIDIA NIM API error' });
     }
 
-    const data = await groqRes.json();
+    const data = await nvidiaRes.json();
     const rawText = data.choices?.[0]?.message?.content || '';
 
     const cleaned = rawText.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim();
@@ -145,6 +147,6 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`\n🔥 ProjectForge backend running on http://localhost:${PORT}`);
-  console.log(`   AI-powered project generation via Groq API`);
-  console.log(`   Set GROQ_API_KEY in .env to enable generation\n`);
+  console.log(`   AI-powered project generation via NVIDIA NIM (DeepSeek V4 Pro)`);
+  console.log(`   Set NVIDIA_API_KEY in .env to enable generation\n`);
 });
