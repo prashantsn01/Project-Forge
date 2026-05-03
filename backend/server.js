@@ -17,9 +17,9 @@ app.post('/api/generate', async (req, res) => {
     return res.status(400).json({ error: 'description and stack are required' });
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured on server' });
+    return res.status(500).json({ error: 'GROQ_API_KEY not configured on server' });
   }
 
   const featList = (features || []).join(', ') || 'auth, REST API, database';
@@ -74,28 +74,30 @@ RULES:
 - Generate at least 6 files for HTML stack, 10 for React stack, 9 for Spring stack.`;
 
   try {
-    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
+        model: 'llama-3.3-70b-versatile',
         max_tokens: 8000,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }]
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        response_format: { type: 'json_object' }
       })
     });
 
-    if (!claudeRes.ok) {
-      const err = await claudeRes.json().catch(() => ({}));
-      return res.status(502).json({ error: err.error?.message || 'Claude API error' });
+    if (!groqRes.ok) {
+      const err = await groqRes.json().catch(() => ({}));
+      return res.status(502).json({ error: err.error?.message || 'Groq API error' });
     }
 
-    const data = await claudeRes.json();
-    const rawText = data.content?.[0]?.text || '';
+    const data = await groqRes.json();
+    const rawText = data.choices?.[0]?.message?.content || '';
 
     const cleaned = rawText.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim();
 
@@ -143,6 +145,6 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`\n🔥 ProjectForge backend running on http://localhost:${PORT}`);
-  console.log(`   AI-powered project generation via Claude Haiku API`);
-  console.log(`   Set ANTHROPIC_API_KEY in .env to enable generation\n`);
+  console.log(`   AI-powered project generation via Groq API`);
+  console.log(`   Set GROQ_API_KEY in .env to enable generation\n`);
 });
