@@ -456,7 +456,7 @@ footer{
       <span>Connect to your running Node.js backend to enable AI generation</span>
     </div>
     <div class="srv-input-row">
-      <input class="srv-input" id="backend-url" type="text" placeholder="http://localhost:3001"/>
+      <input class="srv-input" id="backend-url" type="text" placeholder="http://project-forge-backend-4t7e.onrender.com"/>
       <button class="srv-btn" id="api-save-btn">Connect</button>
     </div>
     <div class="srv-status" id="api-status" style="display:none"></div>
@@ -736,7 +736,7 @@ footer{
 // STATE
 // ═══════════════════════════════════════
 var S = { step:1, desc:'', stack:'', delivery:'zip', generatedProject:null };
-var BACKEND_URL = localStorage.getItem('pf_backend') || 'http://localhost:3001';
+var BACKEND_URL = localStorage.getItem('pf_backend') || 'http://project-forge-backend-4t7e.onrender.com';
 
 // ═══════════════════════════════════════
 // QUICK-START CHIPS
