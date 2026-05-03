@@ -10,9 +10,6 @@ const PORT = process.env.PORT || 3001;
 app.use(cors({ origin: process.env.CLIENT_URL || '*' }));
 app.use(express.json({ limit: '4mb' }));
 
-// ─────────────────────────────────────────────────────────────
-// POST /api/generate  –  calls Anthropic and streams back files
-// ─────────────────────────────────────────────────────────────
 app.post('/api/generate', async (req, res) => {
   const { description, stack, features, level, commentMode } = req.body;
 
@@ -20,9 +17,9 @@ app.post('/api/generate', async (req, res) => {
     return res.status(400).json({ error: 'description and stack are required' });
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured on server' });
+    return res.status(500).json({ error: 'OPENAI_API_KEY not configured on server' });
   }
 
   const featList = (features || []).join(', ') || 'auth, REST API, database';
@@ -71,36 +68,36 @@ RULES:
 - Match the stack exactly. For "React + Node.js": backend = Express + MongoDB + JWT, frontend = React + Vite + Axios.
 - For "Java Spring Boot": use Spring Security, Spring Data JPA, PostgreSQL, Lombok.
 - For "HTML/CSS/JS": pure vanilla, no frameworks, localStorage or REST API.
-- Name models/routes/components after the actual project domain (e.g. Attendance system → Student.js, AttendanceRecord.js, not generic Item.js).
+- Name models/routes/components after the actual project domain.
 - Color guide: .js/.ts = #fbbf24, .jsx/.tsx = #61dafb, .java = #86efac, .css = #3b82f6, .html = #f97316, .json = #34d399, .env = #f87171, .md = #a78bfa, .xml = #93c5fd
 - Insights should teach real concepts, reference specific code in the generated files.
 - Generate at least 6 files for HTML stack, 10 for React stack, 9 for Spring stack.`;
 
   try {
-    const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: 'claude-opus-4-5',
+        model: 'gpt-4o-mini',
         max_tokens: 8000,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }]
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        response_format: { type: 'json_object' }
       })
     });
 
-    if (!anthropicRes.ok) {
-      const err = await anthropicRes.json().catch(() => ({}));
-      return res.status(502).json({ error: err.error?.message || 'Anthropic API error' });
+    if (!openaiRes.ok) {
+      const err = await openaiRes.json().catch(() => ({}));
+      return res.status(502).json({ error: err.error?.message || 'OpenAI API error' });
     }
 
-    const data = await anthropicRes.json();
-    const rawText = data.content?.[0]?.text || '';
-
-    // Strip markdown fences if model wraps it anyway
+    const data = await openaiRes.json();
+    const rawText = data.choices?.[0]?.message?.content || '';
     const cleaned = rawText.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim();
 
     let project;
@@ -118,9 +115,6 @@ RULES:
   }
 });
 
-// ─────────────────────────────────────────────────────────────
-// POST /api/download  –  stream a ZIP of all generated files
-// ─────────────────────────────────────────────────────────────
 app.post('/api/download', (req, res) => {
   const { project } = req.body;
   if (!project || !project.folders) {
@@ -144,15 +138,12 @@ app.post('/api/download', (req, res) => {
   archive.finalize();
 });
 
-// ─────────────────────────────────────────────────────────────
-// Health check
-// ─────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', version: '2.0.0', aiPowered: true });
 });
 
 app.listen(PORT, () => {
   console.log(`\n🔥 ProjectForge backend running on http://localhost:${PORT}`);
-  console.log(`   AI-powered project generation via Anthropic API`);
-  console.log(`   Set ANTHROPIC_API_KEY in .env to enable generation\n`);
+  console.log(`   AI-powered project generation via OpenAI API`);
+  console.log(`   Set OPENAI_API_KEY in .env to enable generation\n`);
 });
