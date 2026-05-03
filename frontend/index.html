@@ -281,7 +281,7 @@ select:focus{border-color:var(--accent)}
       Enter your backend URL to enable AI generation. Run the included Node.js server locally.
     </div>
     <div class="api-input-row">
-      <input class="api-input" id="backend-url" type="text" placeholder="http://localhost:3001" value="http://localhost:3001"/>
+      <input class="api-input" id="backend-url" type="text" placeholder="https://project-forge-backend-4t7e.onrender.com" value="https://project-forge-backend-4t7e.onrender.com"/>
       <button class="api-save-btn" id="api-save-btn">Connect</button>
     </div>
     <div class="api-status" id="api-status" style="display:none"></div>
@@ -464,7 +464,7 @@ select:focus{border-color:var(--accent)}
 // STATE
 // ─────────────────────────────────────────────
 var S = { step: 1, desc: '', stack: '', delivery: 'zip', generatedProject: null };
-var BACKEND_URL = localStorage.getItem('pf_backend') || 'http://localhost:3001';
+var BACKEND_URL = localStorage.getItem('pf_backend') || 'https://project-forge-backend-4t7e.onrender.com';
 
 var CHIP_LABELS = [
   'Attendance System','E-commerce Store','Social Media App','Chat Application',
