@@ -17,9 +17,9 @@ app.post('/api/generate', async (req, res) => {
     return res.status(400).json({ error: 'description and stack are required' });
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'OPENAI_API_KEY not configured on server' });
+    return res.status(500).json({ error: 'GEMINI_API_KEY not configured on server' });
   }
 
   const featList = (features || []).join(', ') || 'auth, REST API, database';
@@ -74,30 +74,23 @@ RULES:
 - Generate at least 6 files for HTML stack, 10 for React stack, 9 for Spring stack.`;
 
   try {
-    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        max_tokens: 8000,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        response_format: { type: 'json_object' }
+        contents: [{ parts: [{ text: systemPrompt + '\n\n' + userPrompt }] }],
+        generationConfig: { maxOutputTokens: 8000, temperature: 0.7 }
       })
     });
 
-    if (!openaiRes.ok) {
-      const err = await openaiRes.json().catch(() => ({}));
-      return res.status(502).json({ error: err.error?.message || 'OpenAI API error' });
+    if (!geminiRes.ok) {
+      const err = await geminiRes.json().catch(() => ({}));
+      return res.status(502).json({ error: err.error?.message || 'Gemini API error' });
     }
 
-    const data = await openaiRes.json();
-    const rawText = data.choices?.[0]?.message?.content || '';
+    const data = await geminiRes.json();
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
     const cleaned = rawText.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim();
 
     let project;
@@ -144,6 +137,6 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`\n🔥 ProjectForge backend running on http://localhost:${PORT}`);
-  console.log(`   AI-powered project generation via OpenAI API`);
-  console.log(`   Set OPENAI_API_KEY in .env to enable generation\n`);
+  console.log(`   AI-powered project generation via Gemini API`);
+  console.log(`   Set GEMINI_API_KEY in .env to enable generation\n`);
 });
