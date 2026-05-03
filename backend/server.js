@@ -74,24 +74,33 @@ RULES:
 - Generate at least 6 files for HTML stack, 10 for React stack, 9 for Spring stack.`;
 
   try {
+    console.log('→ Request received:', description.slice(0, 60));
+    console.log('→ Calling NVIDIA NIM API (deepseek-v4-flash)...');
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 55000); // 55s timeout
+
     const nvidiaRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: 'deepseek-ai/deepseek-v4-pro',
-        max_tokens: 16384,
-        temperature: 1,
+        model: 'deepseek-ai/deepseek-v4-flash',
+        max_tokens: 8192,
+        temperature: 0.7,
         top_p: 0.95,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
-        ],
-        extra_body: { chat_template_kwargs: { thinking: false } }
+        ]
       })
     });
+
+    clearTimeout(timeout);
+    console.log('→ Got response from NVIDIA, status:', nvidiaRes.status);
 
     if (!nvidiaRes.ok) {
       const err = await nvidiaRes.json().catch(() => ({}));
@@ -99,6 +108,7 @@ RULES:
     }
 
     const data = await nvidiaRes.json();
+    console.log('→ Parsing JSON response...');
     const rawText = data.choices?.[0]?.message?.content || '';
 
     const cleaned = rawText.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim();
@@ -110,9 +120,14 @@ RULES:
       return res.status(502).json({ error: 'Model returned invalid JSON', raw: rawText.slice(0, 500) });
     }
 
+    console.log('→ Done! Sending project:', project.projectName);
     res.json({ ok: true, project });
 
   } catch (err) {
+    if (err.name === 'AbortError') {
+      console.error('→ Request timed out after 55s');
+      return res.status(504).json({ error: 'Generation timed out — try a simpler project description or fewer features' });
+    }
     console.error('Generate error:', err);
     res.status(500).json({ error: err.message });
   }
@@ -147,6 +162,6 @@ app.get('/api/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`\n🔥 ProjectForge backend running on http://localhost:${PORT}`);
-  console.log(`   AI-powered project generation via NVIDIA NIM (DeepSeek V4 Pro)`);
+  console.log(`   AI-powered project generation via NVIDIA NIM (DeepSeek V4 Flash)`);
   console.log(`   Set NVIDIA_API_KEY in .env to enable generation\n`);
 });
