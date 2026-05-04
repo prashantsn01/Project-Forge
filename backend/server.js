@@ -387,8 +387,9 @@ app.post('/api/generate', async (req, res) => {
 
   const systemPrompt = getSystemPrompt(stack);
 
-  const isAndroid = stack.toLowerCase().includes('android');
-  const fileTemplate = isAndroid ? `
+  // fileTemplate removed — replaced by chunked generation below
+  const _isAndroid_unused = stack.toLowerCase().includes('android'); // kept for reference
+  const fileTemplate_UNUSED = `
 {
   "projectName": "PascalCaseName",
   "description": "one sentence",
@@ -506,97 +507,159 @@ app.post('/api/generate', async (req, res) => {
   ]
 }`;
 
-  const userPrompt = `Generate a COMPLETE, 100% WORKING, ZERO-ERROR project. Every single file must be fully implemented with no stubs.
+  // ─────────────────────────────────────────────────────────────
+  // CHUNKED GENERATION — stays within Groq's 12k TPM rate limit
+  // Strategy: split into 3 sequential calls of ≤6k output tokens
+  //   Chunk 1 → project metadata + backend files
+  //   Chunk 2 → frontend files (components, pages, context)
+  //   Chunk 3 → config files + README + insights
+  // A 62s cooldown between chunks resets the 1-min token bucket.
+  // ─────────────────────────────────────────────────────────────
 
-PROJECT: ${description}
+  const CHUNK_MAX_TOKENS = 6000;   // well under 12k/min limit
+  const COOLDOWN_MS      = 62000;  // 62s ensures the minute window resets
+
+  /** Sleep helper */
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  /** Extract + repair JSON from a raw LLM string */
+  function extractJSON(raw) {
+    let s = raw.replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/,'').trim();
+    const f = s.indexOf('{'), l = s.lastIndexOf('}');
+    if (f !== -1 && l !== -1) s = s.slice(f, l + 1);
+    try { return JSON.parse(s); } catch (_) {
+      // repair unclosed brackets/braces
+      const opens = (s.match(/\[/g)||[]).length - (s.match(/\]/g)||[]).length;
+      const openB = (s.match(/\{/g)||[]).length - (s.match(/\}/g)||[]).length;
+      s += ']'.repeat(Math.max(0,opens)) + '}'.repeat(Math.max(0,openB));
+      return JSON.parse(s); // throws if still broken
+    }
+  }
+
+  /** Single Groq call — max_tokens capped at CHUNK_MAX_TOKENS */
+  async function groqCall(messages) {
+    const resp = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      max_tokens: CHUNK_MAX_TOKENS,
+      temperature: 0.15,
+      top_p: 0.9,
+      messages
+    });
+    return resp.choices?.[0]?.message?.content || '';
+  }
+
+  const isAndroid = stack.toLowerCase().includes('android');
+  const levelStr   = levelMap[level]      || levelMap['3'];
+  const commentStr = commentMap[commentMode] || commentMap['standard'];
+  const scaleStr   = scaleMap[scale]      || scaleMap['standard'];
+
+  const projectContext = `PROJECT: ${description}
 STACK: ${stack}
 FEATURES: ${featList}
-LEVEL: ${levelMap[level] || levelMap['3']}
-COMMENTS: ${commentMap[commentMode] || commentMap['standard']}
-SCALE: ${scaleMap[scale] || scaleMap['standard']}
+LEVEL: ${levelStr}
+COMMENTS: ${commentStr}
+SCALE: ${scaleStr}`;
 
-ACCURACY CHECKLIST — verify before outputting:
-✓ Every import in every file has a matching source file or package.json dependency
-✓ All component/class names are consistent across all files (no spelling drift)
-✓ Every async function has try/catch
-✓ No TODO, no placeholder comments, no "// implement this"
-✓ All [Domain], [domain], [DomainModel], [DomainList] placeholders replaced with the REAL domain name from the project description
-✓ package.json / build.gradle contains ALL packages that are imported in the code
-✓ JSON response is valid — all special characters inside code strings are escaped
-
-Return ONLY the JSON below — no markdown, no explanation, nothing before or after the JSON:
-${fileTemplate}
-
-REPEAT: Replace ALL bracket placeholders like [Domain], [DomainModel], [DomainList], [DomainForm], [domainRoute] with real domain-specific names derived from the project description.`;
+  const accuracyRules = `ACCURACY RULES (mandatory):
+- Zero placeholders, zero TODOs, zero stubs — every function body fully implemented
+- All imports match actual files or package.json deps
+- All component/class names consistent across files — no spelling drift
+- Every async has try/catch with proper error response
+- All [Domain] / [DomainModel] / [domainRoute] placeholders replaced with REAL names from description
+- Return ONLY valid JSON — escape all backslashes, newlines, quotes inside strings`;
 
   try {
     console.log(`\n→ [ProjectForge Elite] ${description.slice(0,80)}`);
-    console.log(`→ Stack: ${stack} | Scale: ${scale} | Level: ${level}`);
+    console.log(`→ Stack: ${stack} | Chunked mode (3×${CHUNK_MAX_TOKENS} tokens) | Scale: ${scale}`);
 
-    // Use streaming for more reliable large outputs
-    const chatCompletion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      max_tokens: 32768,
-      temperature: 0.15,   // lower = more deterministic = fewer hallucinated imports
-      top_p: 0.9,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ]
-    });
+    // ── CHUNK 1: metadata + backend (or Android core) ──────────
+    console.log('→ Chunk 1/3: metadata + backend …');
+    const chunk1Prompt = isAndroid
+      ? `${projectContext}\n\n${accuracyRules}\n\nGenerate ONLY the following JSON — no markdown, no extra text:\n{\n  "projectName": "PascalCaseName",\n  "description": "one sentence",\n  "stack": "${stack}",\n  "folders": [\n    { "dir": "app/src/main/", "files": [{"name":"AndroidManifest.xml","color":"#ff8c42","code":"FULL XML"}] },\n    { "dir": "app/src/main/java/com/projectforge/", "files": [{"name":"MyApplication.kt","color":"#7c52ff","code":"FULL @HiltAndroidApp"}] },\n    { "dir": "app/src/main/java/com/projectforge/navigation/", "files": [{"name":"NavGraph.kt","color":"#7c52ff","code":"FULL NavHost"},{"name":"Screen.kt","color":"#7c52ff","code":"FULL sealed class"}] },\n    { "dir": "app/src/main/java/com/projectforge/ui/theme/", "files": [{"name":"Theme.kt","color":"#7c52ff","code":"FULL MaterialTheme"},{"name":"Color.kt","color":"#7c52ff","code":"FULL colors"}] }\n  ]\n}`
+      : `${projectContext}\n\n${accuracyRules}\n\nGenerate ONLY the following JSON — no markdown, no extra text:\n{\n  "projectName": "PascalCaseName",\n  "description": "one sentence",\n  "stack": "${stack}",\n  "folders": [\n    { "dir": "backend/", "files": [{"name":"server.js","color":"#f59e0b","code":"FULL express server"},{"name":"package.json","color":"#34d399","code":"FULL"},{"name":".env.example","color":"#ff4757","code":"FULL"}] },\n    { "dir": "backend/config/", "files": [{"name":"db.js","color":"#f59e0b","code":"FULL mongoose connect"}] },\n    { "dir": "backend/middleware/", "files": [{"name":"auth.js","color":"#f59e0b","code":"FULL JWT middleware"}] },\n    { "dir": "backend/models/", "files": [{"name":"User.js","color":"#f59e0b","code":"FULL mongoose User model"},{"name":"[DomainModel].js","color":"#f59e0b","code":"FULL domain model — replace [DomainModel]"}] },\n    { "dir": "backend/routes/", "files": [{"name":"auth.js","color":"#f59e0b","code":"FULL auth routes"},{"name":"[domainRoute].js","color":"#f59e0b","code":"FULL CRUD routes — replace [domainRoute]"}] }\n  ]\n}`;
 
-    const rawText = chatCompletion.choices?.[0]?.message?.content || '';
+    const raw1 = await groqCall([
+      { role: 'system', content: getSystemPrompt(stack) },
+      { role: 'user',   content: chunk1Prompt }
+    ]);
+    let part1;
+    try { part1 = extractJSON(raw1); }
+    catch(e) { return res.status(502).json({ error: 'Chunk 1 parse failed: ' + e.message, raw: raw1.slice(0,400) }); }
 
-    // Robust JSON extraction
-    let jsonStr = rawText
-      .replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
+    // ── COOLDOWN ────────────────────────────────────────────────
+    console.log(`→ Cooldown ${COOLDOWN_MS/1000}s (rate-limit reset) …`);
+    await sleep(COOLDOWN_MS);
 
-    // Find JSON boundaries
-    const firstBrace = jsonStr.indexOf('{');
-    const lastBrace = jsonStr.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace !== -1) {
-      jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
-    }
+    // ── CHUNK 2: frontend files ─────────────────────────────────
+    console.log('→ Chunk 2/3: frontend …');
+    const domainHint = `Project is "${description}". Use the same projectName "${part1.projectName}" and replace all [Domain] placeholders with the real domain name.`;
+    const chunk2Prompt = isAndroid
+      ? `${domainHint}\n${accuracyRules}\n\nGenerate ONLY the following JSON (folders array only, no outer object) — no markdown:\n[\n  { "dir": "app/src/main/java/com/projectforge/ui/screens/", "files": [{"name":"HomeScreen.kt","color":"#7c52ff","code":"FULL composable"},{"name":"[Domain]ListScreen.kt","color":"#7c52ff","code":"FULL composable — replace [Domain]"},{"name":"[Domain]DetailScreen.kt","color":"#7c52ff","code":"FULL — replace [Domain]"}] },\n  { "dir": "app/src/main/java/com/projectforge/viewmodel/", "files": [{"name":"[Domain]ViewModel.kt","color":"#7c52ff","code":"FULL @HiltViewModel — replace [Domain]"},{"name":"[Domain]UiState.kt","color":"#7c52ff","code":"FULL sealed class — replace [Domain]"}] },\n  { "dir": "app/src/main/java/com/projectforge/ui/components/", "files": [{"name":"[Domain]Card.kt","color":"#7c52ff","code":"FULL composable — replace [Domain]"},{"name":"LoadingIndicator.kt","color":"#7c52ff","code":"FULL"},{"name":"ErrorMessage.kt","color":"#7c52ff","code":"FULL"}] }\n]`
+      : `${domainHint}\n${accuracyRules}\n\nGenerate ONLY the following JSON (folders array only) — no markdown:\n[\n  { "dir": "frontend/src/", "files": [{"name":"App.jsx","color":"#61dafb","code":"FULL BrowserRouter + routes"},{"name":"main.jsx","color":"#61dafb","code":"FULL createRoot"},{"name":"index.css","color":"#3b82f6","code":"COMPLETE professional CSS"}] },\n  { "dir": "frontend/src/context/", "files": [{"name":"AuthContext.jsx","color":"#61dafb","code":"FULL context with localStorage restore"}] },\n  { "dir": "frontend/src/utils/", "files": [{"name":"api.js","color":"#f59e0b","code":"FULL axios instance + interceptors"}] },\n  { "dir": "frontend/src/components/", "files": [{"name":"Navbar.jsx","color":"#61dafb","code":"FULL sticky nav"},{"name":"Sidebar.jsx","color":"#61dafb","code":"FULL sidebar with active states"},{"name":"Toast.jsx","color":"#61dafb","code":"FULL toast notifications"},{"name":"Loader.jsx","color":"#61dafb","code":"FULL spinner"}] },\n  { "dir": "frontend/src/pages/", "files": [{"name":"Login.jsx","color":"#61dafb","code":"FULL login+register form"},{"name":"Dashboard.jsx","color":"#61dafb","code":"FULL dashboard with real API data"},{"name":"[DomainList].jsx","color":"#61dafb","code":"FULL list page — replace [DomainList]"},{"name":"[DomainForm].jsx","color":"#61dafb","code":"FULL form page — replace [DomainForm]"}] }\n]`;
 
-    let project;
+    const raw2 = await groqCall([
+      { role: 'system', content: getSystemPrompt(stack) },
+      { role: 'user',   content: chunk2Prompt }
+    ]);
+    let part2Folders;
     try {
-      project = JSON.parse(jsonStr);
-    } catch (parseErr) {
-      // Attempt recovery: truncated JSON
-      console.error('JSON parse error — attempting recovery...');
-      try {
-        // Close any open arrays/objects
-        let repaired = jsonStr;
-        const opens = (repaired.match(/\[/g)||[]).length - (repaired.match(/\]/g)||[]).length;
-        const opensBrace = (repaired.match(/\{/g)||[]).length - (repaired.match(/\}/g)||[]).length;
-        repaired += ']'.repeat(Math.max(0,opens)) + '}'.repeat(Math.max(0,opensBrace));
-        project = JSON.parse(repaired);
-        console.log('Recovery succeeded');
-      } catch(_) {
-        return res.status(502).json({
-          error: 'AI returned malformed JSON. This can happen on very large projects — try again or reduce scope.',
-          raw: rawText.slice(0, 400)
-        });
-      }
-    }
+      const s = raw2.replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/,'').trim();
+      const f = s.indexOf('['), l = s.lastIndexOf(']');
+      part2Folders = JSON.parse(f !== -1 && l !== -1 ? s.slice(f, l+1) : s);
+    } catch(e) { return res.status(502).json({ error: 'Chunk 2 parse failed: ' + e.message, raw: raw2.slice(0,400) }); }
+
+    // ── COOLDOWN ────────────────────────────────────────────────
+    console.log(`→ Cooldown ${COOLDOWN_MS/1000}s …`);
+    await sleep(COOLDOWN_MS);
+
+    // ── CHUNK 3: config + readme + insights ─────────────────────
+    console.log('→ Chunk 3/3: config + README + insights …');
+    const chunk3Prompt = isAndroid
+      ? `${domainHint}\n${accuracyRules}\n\nGenerate ONLY the following JSON — no markdown:\n{\n  "folders": [\n    { "dir": "app/src/main/java/com/projectforge/data/local/", "files": [{"name":"AppDatabase.kt","color":"#7c52ff","code":"FULL @Database Room"},{"name":"[Domain]Entity.kt","color":"#7c52ff","code":"FULL @Entity — replace [Domain]"},{"name":"[Domain]Dao.kt","color":"#7c52ff","code":"FULL @Dao — replace [Domain]"}] },\n    { "dir": "app/src/main/java/com/projectforge/data/remote/", "files": [{"name":"ApiService.kt","color":"#7c52ff","code":"FULL Retrofit interface"},{"name":"[Domain]Dto.kt","color":"#7c52ff","code":"FULL DTO — replace [Domain]"}] },\n    { "dir": "app/src/main/java/com/projectforge/data/repository/", "files": [{"name":"[Domain]Repository.kt","color":"#7c52ff","code":"FULL repository — replace [Domain]"}] },\n    { "dir": "app/src/main/java/com/projectforge/di/", "files": [{"name":"AppModule.kt","color":"#7c52ff","code":"FULL @Module Hilt"},{"name":"RepositoryModule.kt","color":"#7c52ff","code":"FULL binding module"}] },\n    { "dir": "app/src/main/java/com/projectforge/utils/", "files": [{"name":"Resource.kt","color":"#7c52ff","code":"FULL sealed class"},{"name":"Constants.kt","color":"#7c52ff","code":"FULL BASE_URL etc"}] },\n    { "dir": "app/src/main/res/values/", "files": [{"name":"strings.xml","color":"#ff8c42","code":"FULL"},{"name":"colors.xml","color":"#ff8c42","code":"FULL"}] },\n    { "dir": "app/", "files": [{"name":"build.gradle","color":"#02569b","code":"FULL with exact dep versions"}] },\n    { "dir": "", "files": [{"name":"build.gradle","color":"#02569b","code":"project-level"},{"name":"settings.gradle","color":"#02569b","code":"include :app"},{"name":"README.md","color":"#a78bfa","code":"FULL setup guide"}] }\n  ],\n  "setupSteps": ["Open in Android Studio","Sync Gradle","Run on emulator"],\n  "insights": [{"t":"Architecture","b":"MVVM + Repository with <code>example</code>"}]\n}`
+      : `${domainHint}\n${accuracyRules}\n\nGenerate ONLY the following JSON — no markdown:\n{\n  "folders": [\n    { "dir": "frontend/", "files": [{"name":"vite.config.js","color":"#f59e0b","code":"FULL with /api proxy"},{"name":"package.json","color":"#34d399","code":"FULL with all deps"},{"name":".env.example","color":"#ff4757","code":"VITE_API_URL=http://localhost:3001"}] },\n    { "dir": "", "files": [{"name":"README.md","color":"#a78bfa","code":"FULL setup guide with all commands"}] }\n  ],\n  "setupSteps": [\n    "cd backend && npm install",\n    "cp backend/.env.example backend/.env  (fill MONGO_URI + JWT_SECRET)",\n    "cd frontend && npm install",\n    "Terminal 1: cd backend && npm run dev",\n    "Terminal 2: cd frontend && npm run dev",\n    "Open http://localhost:5173"\n  ],\n  "insights": [\n    {"t":"Modular routes","b":"Each resource gets its own Router. <code>app.use('/api/auth', require('./routes/auth'))</code>"},\n    {"t":"JWT middleware","b":"verifyToken extracts the Bearer token, calls <code>jwt.verify()</code>, attaches decoded user to <code>req.user</code>."},\n    {"t":"Axios interceptors","b":"Request interceptor adds <code>Authorization: Bearer token</code>. 401 interceptor catches expired tokens and redirects."},\n    {"t":"bcrypt hashing","b":"Passwords hashed in Mongoose <code>pre('save')</code> with <code>bcrypt.hash(password, 12)</code>. Plain text never stored."}\n  ]\n}`;
+
+    const raw3 = await groqCall([
+      { role: 'system', content: getSystemPrompt(stack) },
+      { role: 'user',   content: chunk3Prompt }
+    ]);
+    let part3;
+    try { part3 = extractJSON(raw3); }
+    catch(e) { return res.status(502).json({ error: 'Chunk 3 parse failed: ' + e.message, raw: raw3.slice(0,400) }); }
+
+    // ── MERGE all chunks ────────────────────────────────────────
+    const project = {
+      projectName: part1.projectName || 'ProjectForge',
+      description: part1.description || description,
+      stack,
+      folders: [
+        ...(part1.folders     || []),
+        ...(part2Folders      || []),
+        ...(part3.folders     || [])
+      ],
+      setupSteps: part3.setupSteps || [],
+      insights:   part3.insights   || []
+    };
 
     // Count real lines
     let totalLines = 0;
-    (project.folders || []).forEach(f =>
+    project.folders.forEach(f =>
       (f.files || []).forEach(file => {
         if (file.code) totalLines += file.code.split('\n').length;
       })
     );
     project.totalLines = totalLines;
 
-    const fileCount = (project.folders||[]).reduce((a,f)=>a+(f.files||[]).length,0);
-    console.log(`→ ✅ ${project.projectName} — ${totalLines} lines, ${fileCount} files`);
+    const fileCount = project.folders.reduce((a,f)=>a+(f.files||[]).length, 0);
+    console.log(`→ ✅ ${project.projectName} — ${totalLines} lines, ${fileCount} files (3 chunks merged)`);
     res.json({ ok: true, project });
 
   } catch (err) {
     console.error('→ Error:', err.message);
+    if (err.status === 429 || err.message?.includes('rate limit') || err.message?.includes('Rate limit')) {
+      return res.status(429).json({ error: 'Groq rate limit hit — please wait 60 seconds and try again.' });
+    }
     if (err.code === 'ETIMEDOUT' || err.message?.includes('timed out')) {
-      return res.status(504).json({ error: 'Generation timed out — try a shorter description or simpler stack.' });
+      return res.status(504).json({ error: 'Generation timed out — try a shorter description.' });
     }
     res.status(500).json({ error: err.message });
   }
@@ -629,19 +692,20 @@ app.post('/api/download', (req, res) => {
 // HEALTH
 // ─────────────────────────────────────────────────────────────
 app.get('/api/health', (_, res) => res.json({
-  status: 'ok', version: '5.0.0',
+  status: 'ok', version: '5.1.0',
   engine: 'Groq + LLaMA 3.3 70B',
   accuracy: '85%+',
+  mode: 'chunked-3x6k (rate-limit safe)',
   developer: 'Prashant S Nagani'
 }));
 
 app.listen(PORT, () => {
   console.log(`\n╔════════════════════════════════════════════════╗`);
-  console.log(`║   ProjectForge Elite  v5.0.0                   ║`);
-  console.log(`║   Accuracy: 85%+ | Android Studio: ✅          ║`);
+  console.log(`║   ProjectForge Elite  v5.1.0                   ║`);
+  console.log(`║   Accuracy: 85%+ | Chunked Gen: ✅             ║`);
   console.log(`║   Developer: Prashant S Nagani                 ║`);
   console.log(`╚════════════════════════════════════════════════╝`);
   console.log(`\n🔥 Backend → http://localhost:${PORT}`);
-  console.log(`⚡ AI: Groq + LLaMA 3.3 70B (temp=0.15 for accuracy)`);
+  console.log(`⚡ AI: Groq + LLaMA 3.3 70B | 3×6k chunks (12k TPM safe)`);
   console.log(`🔑 API Key: ${process.env.GROQ_API_KEY ? '✅' : '❌ Missing — add to .env'}\n`);
 });
