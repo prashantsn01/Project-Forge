@@ -135,13 +135,17 @@ export default function GeneratePage() {
     setFeatures(prev => prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f])
 
   const LOADING_MSGS = [
-    'Analyzing project requirements…',
-    'Designing system architecture…',
-    'Generating backend code…',
-    'Building frontend components…',
-    'Wiring up data models…',
-    'Writing auth & security…',
-    'Finalizing project structure…',
+    '⚙️ Chunk 1/3 — Analyzing & generating backend…',
+    '⚙️ Chunk 1/3 — Writing server, models & routes…',
+    '⏳ Rate-limit cooldown (62s between chunks)…',
+    '⏳ Keeping under Groq 12k token/min limit…',
+    '⚙️ Chunk 2/3 — Building frontend components…',
+    '⚙️ Chunk 2/3 — Writing pages, context & utils…',
+    '⏳ Rate-limit cooldown (62s between chunks)…',
+    '⏳ Almost there — waiting for token window reset…',
+    '⚙️ Chunk 3/3 — Generating config & README…',
+    '🔗 Merging all chunks into final project…',
+    '✅ Finalizing & counting lines…',
   ]
 
   const generate = async () => {
@@ -153,7 +157,7 @@ export default function GeneratePage() {
     const interval = setInterval(() => {
       msgIdx = (msgIdx + 1) % LOADING_MSGS.length
       setLoadingMsg(LOADING_MSGS[msgIdx])
-    }, 2500)
+    }, 14000) // ~14s per message matches 3×(~30s gen + 62s cooldown) ≈ 3.5 min total
 
     try {
       const res = await fetch(`${backendUrl}/api/generate`, {
@@ -263,7 +267,7 @@ export default function GeneratePage() {
       <div className="generator-card">
         <div className="generator-hero">
           <div className="generator-hero-title">⚡ ProjectForge Elite Generator</div>
-          <div className="generator-hero-sub">Powered by Groq AI + LLaMA 3.3 70B · 85%+ accuracy · Android Studio supported</div>
+          <div className="generator-hero-sub">Powered by Groq AI + LLaMA 3.3 70B · 85%+ accuracy · 3-chunk generation (rate-limit safe)</div>
         </div>
 
         <div className="generator-body">
