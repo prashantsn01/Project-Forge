@@ -41,7 +41,7 @@ const httpsAgent = new https.Agent({
 function nimCall(messages, maxTokens = 8192) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
-      model: 'deepseek-ai/deepseek-v4-pro',
+      model: 'deepseek-ai/deepseek-r1',
       messages, max_tokens: maxTokens, temperature: 0.15, top_p: 0.90, stream: false
     });
     const options = {
@@ -109,14 +109,20 @@ function replacePlaceholders(s, names) {
     .replace(/\[pkg\]/g,    'com.projectforge');
 }
 
+// Strip DeepSeek R1 <think>...</think> reasoning blocks
+function stripThink(raw) {
+  return raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
 async function extractDomainNames(description) {
   const SKIP = new Set(['generate','create','build','make','develop','design','get','an','a','the','for','with','and','that','this','using','based','app','system','platform','tool','website','web','api','mobile','full','stack']);
   try {
     const raw = await nimCall([{
       role: 'user',
-      content: `What is the PRIMARY data entity (main thing managed/stored) in: "${description}"?\nReply with ONLY valid JSON, no markdown:\n{"singular":"Event","plural":"Events","lower":"event","lowerPlural":"events"}`
-    }], 100);
-    const clean = raw.replace(/```[a-z]*\n?/gi,'').trim();
+      content: `What is the PRIMARY data entity (main thing managed/stored) in: "${description}"?\nReply with ONLY valid JSON, no markdown, no explanation:\n{"singular":"Event","plural":"Events","lower":"event","lowerPlural":"events"}`
+    }], 512);
+    // DeepSeek R1 wraps reasoning in <think> tags — strip before parsing
+    const clean = stripThink(raw).replace(/```[a-z]*\n?/gi,'').trim();
     const j = JSON.parse(clean.slice(clean.indexOf('{'), clean.lastIndexOf('}')+1));
     const pascal = j.singular.trim().charAt(0).toUpperCase() + j.singular.trim().slice(1);
     return { Pascal: pascal, PascalPlural: (j.plural||pascal+'s').trim(), lower: (j.lower||pascal.toLowerCase()).trim(), lowerPlural: (j.lowerPlural||pascal.toLowerCase()+'s').trim() };
@@ -200,8 +206,9 @@ async function generateFile(spec, context, stackGuide) {
     }
   ], 8192, fullPath);
 
-  // Strip any accidental markdown fences the model added anyway
-  return raw.replace(/^```[a-z]*\n?/im, '').replace(/\n?```\s*$/im, '').trim();
+  // Strip DeepSeek R1 <think> reasoning blocks, then strip markdown fences
+  const stripped = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  return stripped.replace(/^```[a-z]*\n?/im, '').replace(/\n?```\s*$/im, '').trim();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -390,14 +397,14 @@ app.post('/api/download', (req, res) => {
 // HEALTH
 // ─────────────────────────────────────────────────────────────
 app.get('/api/health', (_,res) => res.json({
-  status:'ok', version:'7.0.0', engine:'NVIDIA NIM — DeepSeek V4 Pro',
+  status:'ok', version:'7.0.1', engine:'NVIDIA NIM — DeepSeek R1',
   mode:'per-file SSE streaming — no JSON parse failures', developer:'Prashant S Nagani'
 }));
 
 app.listen(PORT, () => {
   console.log(`\n╔══════════════════════════════════════════════════════╗`);
   console.log(`║   ProjectForge Elite  v7.0.0                         ║`);
-  console.log(`║   Engine : NVIDIA NIM — DeepSeek V4 Pro              ║`);
+  console.log(`║   Engine : NVIDIA NIM — DeepSeek R1                   ║`);
   console.log(`║   Mode   : Per-file SSE — no JSON parse failures     ║`);
   console.log(`║   Fix    : SSE keep-alive pings every 20s            ║`);
   console.log(`║   Developer: Prashant S Nagani                       ║`);
