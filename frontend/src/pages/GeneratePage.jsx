@@ -135,16 +135,13 @@ export default function GeneratePage() {
     setFeatures(prev => prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f])
 
   const LOADING_MSGS = [
-    '🧠 DeepSeek V4 Pro — extracting domain model…',
-    '⚙️ Chunk 1/6 — Writing backend core (server, models, middleware)…',
-    '⚙️ Chunk 2/6 — Writing auth + full CRUD routes…',
-    '⚙️ Chunk 3/6 — Building frontend foundation (App, CSS, API util)…',
-    '⚙️ Chunk 4/6 — Crafting all UI components…',
-    '⚙️ Chunk 5/6 — Writing all pages (Login, Dashboard, List, Form)…',
-    '⚙️ Chunk 6/6 — Generating README, config & insights…',
-    '🔗 Merging & validating all chunks — replacing placeholders…',
-    '✅ Counting lines & finalizing your project…',
-    '🚀 Almost ready — this is a big one!',
+    'Analyzing project requirements…',
+    'Designing system architecture…',
+    'Generating backend code…',
+    'Building frontend components…',
+    'Wiring up data models…',
+    'Writing auth & security…',
+    'Finalizing project structure…',
   ]
 
   const generate = async () => {
@@ -156,7 +153,7 @@ export default function GeneratePage() {
     const interval = setInterval(() => {
       msgIdx = (msgIdx + 1) % LOADING_MSGS.length
       setLoadingMsg(LOADING_MSGS[msgIdx])
-    }, 28000) // ~28s per chunk × 6 chunks + domain call = ~4-5 min total
+    }, 2500)
 
     try {
       const res = await fetch(`${backendUrl}/api/generate`, {
@@ -167,7 +164,7 @@ export default function GeneratePage() {
           features: features.map(f => f.replace(/^[^\s]+ /, '')),
           level, commentMode, scale
         }),
-        signal: AbortSignal.timeout(480000)
+        signal: AbortSignal.timeout(180000)
       })
       const data = await res.json()
       if (!res.ok || data.error) throw new Error(data.error || 'Generation failed')
@@ -266,7 +263,7 @@ export default function GeneratePage() {
       <div className="generator-card">
         <div className="generator-hero">
           <div className="generator-hero-title">⚡ ProjectForge Elite Generator</div>
-          <div className="generator-hero-sub">Powered by NVIDIA NIM · DeepSeek V4 Pro · 95%+ accuracy · 6-chunk deep generation</div>
+          <div className="generator-hero-sub">Powered by Groq AI + LLaMA 3.3 70B · 85%+ accuracy · Android Studio supported</div>
         </div>
 
         <div className="generator-body">
@@ -370,7 +367,7 @@ export default function GeneratePage() {
               {loading ? (
                 <><div className="spinner" />{loadingMsg}</>
               ) : (
-                <>⚡ Generate with DeepSeek V4 Pro</>
+                <>⚡ Generate with Groq AI</>
               )}
             </button>
             {!connected && (
