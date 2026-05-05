@@ -364,8 +364,9 @@ GENERATE ALL FILES:
 // ─────────────────────────────────────────────────────────────
 const httpsAgent = new https.Agent({
   keepAlive: true,
-  keepAliveMsecs: 30000,
-  maxSockets: 10
+  keepAliveMsecs: 60000,
+  maxSockets: 10,
+  timeout: 720000
 });
 
 function nimCall(messages, maxTokens = 16384) {
@@ -394,7 +395,7 @@ function nimCall(messages, maxTokens = 16384) {
 
     const req = https.request(options, (res) => {
       let data = '';
-      res.socket && res.socket.setTimeout(600000);
+      res.socket && res.socket.setTimeout(720000);
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
         try {
@@ -409,8 +410,8 @@ function nimCall(messages, maxTokens = 16384) {
       res.on('error', reject);
     });
 
-    req.setTimeout(600000, () => {
-      req.destroy(new Error('NIM socket timeout after 600s'));
+    req.setTimeout(720000, () => {
+      req.destroy(new Error('NIM socket timeout after 720s'));
     });
     req.on('error', reject);
     req.write(body);
@@ -600,6 +601,10 @@ async function runChunk(messages, chunkLabel, expectArray = false, maxRetries = 
 // GENERATE ENDPOINT — 6-chunk deep generation
 // ─────────────────────────────────────────────────────────────
 app.post('/api/generate', async (req, res) => {
+  // Extend Node's default 2-min socket timeout for this long-running route
+  req.socket.setTimeout(900000);
+  res.setTimeout(900000);
+
   const { description, stack, features, level, commentMode, scale } = req.body;
   if (!description || !stack) return res.status(400).json({ error: 'description and stack are required' });
   if (!process.env.NVIDIA_API_KEY) return res.status(500).json({ error: 'NVIDIA_API_KEY not configured. Add it to backend/.env' });
@@ -727,7 +732,7 @@ Generate ONLY valid JSON — no markdown, no explanation:
     validateChunk(c1folders, 'Chunk1');
     allFolders.push(...c1folders);
 
-    await sleep(3000);
+    await sleep(800);
 
     // ── CHUNK 2: Backend routes (auth + domain CRUD) ──────────
     console.log('\n[2/6] Backend routes (auth + full CRUD) …');
@@ -760,7 +765,7 @@ Generate ONLY valid JSON (folders array only, no outer object) — no markdown:
     validateChunk(c2folders, 'Chunk2');
     allFolders.push(...c2folders);
 
-    await sleep(3000);
+    await sleep(800);
 
     // ── CHUNK 3: Frontend foundation ──────────────────────────
     console.log('\n[3/6] Frontend foundation (App, Auth, API util, CSS) …');
@@ -843,7 +848,7 @@ Generate ONLY valid JSON (folders array only) — no markdown:
     validateChunk(c3folders, 'Chunk3');
     allFolders.push(...c3folders);
 
-    await sleep(3000);
+    await sleep(800);
 
     // ── CHUNK 4: Frontend components ──────────────────────────
     console.log('\n[4/6] Frontend components (Navbar, Sidebar, ProtectedRoute, Layout, Loader, Toast) …');
@@ -907,7 +912,7 @@ Generate ONLY valid JSON (folders array only) — no markdown:
     validateChunk(c4folders, 'Chunk4');
     allFolders.push(...c4folders);
 
-    await sleep(3000);
+    await sleep(800);
 
     // ── CHUNK 5: Frontend pages ────────────────────────────────
     console.log('\n[5/6] Frontend pages (Login, Dashboard, List, Form) …');
@@ -951,7 +956,7 @@ Generate ONLY valid JSON (folders array only) — no markdown:
     validateChunk(c5folders, 'Chunk5');
     allFolders.push(...c5folders);
 
-    await sleep(3000);
+    await sleep(800);
 
     // ── CHUNK 6: Config + README + Insights ────────────────────
     console.log('\n[6/6] Config files, README, insights …');
