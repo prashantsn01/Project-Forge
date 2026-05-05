@@ -135,17 +135,16 @@ export default function GeneratePage() {
     setFeatures(prev => prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f])
 
   const LOADING_MSGS = [
-    '⚙️ Chunk 1/3 — Analyzing & generating backend…',
-    '⚙️ Chunk 1/3 — Writing server, models & routes…',
-    '⏳ Rate-limit cooldown (62s between chunks)…',
-    '⏳ Keeping under Groq 12k token/min limit…',
-    '⚙️ Chunk 2/3 — Building frontend components…',
-    '⚙️ Chunk 2/3 — Writing pages, context & utils…',
-    '⏳ Rate-limit cooldown (62s between chunks)…',
-    '⏳ Almost there — waiting for token window reset…',
-    '⚙️ Chunk 3/3 — Generating config & README…',
-    '🔗 Merging all chunks into final project…',
-    '✅ Finalizing & counting lines…',
+    '🧠 DeepSeek V4 Pro — extracting domain model…',
+    '⚙️ Chunk 1/6 — Writing backend core (server, models, middleware)…',
+    '⚙️ Chunk 2/6 — Writing auth + full CRUD routes…',
+    '⚙️ Chunk 3/6 — Building frontend foundation (App, CSS, API util)…',
+    '⚙️ Chunk 4/6 — Crafting all UI components…',
+    '⚙️ Chunk 5/6 — Writing all pages (Login, Dashboard, List, Form)…',
+    '⚙️ Chunk 6/6 — Generating README, config & insights…',
+    '🔗 Merging & validating all chunks — replacing placeholders…',
+    '✅ Counting lines & finalizing your project…',
+    '🚀 Almost ready — this is a big one!',
   ]
 
   const generate = async () => {
@@ -157,7 +156,7 @@ export default function GeneratePage() {
     const interval = setInterval(() => {
       msgIdx = (msgIdx + 1) % LOADING_MSGS.length
       setLoadingMsg(LOADING_MSGS[msgIdx])
-    }, 14000) // ~14s per message matches 3×(~30s gen + 62s cooldown) ≈ 3.5 min total
+    }, 28000) // ~28s per chunk × 6 chunks + domain call = ~4-5 min total
 
     try {
       const res = await fetch(`${backendUrl}/api/generate`, {
@@ -168,7 +167,7 @@ export default function GeneratePage() {
           features: features.map(f => f.replace(/^[^\s]+ /, '')),
           level, commentMode, scale
         }),
-        signal: AbortSignal.timeout(180000)
+        signal: AbortSignal.timeout(480000)
       })
       const data = await res.json()
       if (!res.ok || data.error) throw new Error(data.error || 'Generation failed')
@@ -267,7 +266,7 @@ export default function GeneratePage() {
       <div className="generator-card">
         <div className="generator-hero">
           <div className="generator-hero-title">⚡ ProjectForge Elite Generator</div>
-          <div className="generator-hero-sub">Powered by Groq AI + LLaMA 3.3 70B · 85%+ accuracy · 3-chunk generation (rate-limit safe)</div>
+          <div className="generator-hero-sub">Powered by NVIDIA NIM · DeepSeek V4 Pro · 95%+ accuracy · 6-chunk deep generation</div>
         </div>
 
         <div className="generator-body">
@@ -371,7 +370,7 @@ export default function GeneratePage() {
               {loading ? (
                 <><div className="spinner" />{loadingMsg}</>
               ) : (
-                <>⚡ Generate with Groq AI</>
+                <>⚡ Generate with DeepSeek V4 Pro</>
               )}
             </button>
             {!connected && (
