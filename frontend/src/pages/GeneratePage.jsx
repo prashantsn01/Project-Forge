@@ -304,7 +304,7 @@ export default function GeneratePage() {
       <div className="card" style={{ marginBottom: '1.5rem' }}>
         <div style={{ background: 'linear-gradient(135deg, var(--primary), var(--primary-dark))', margin: '-1.5rem -1.5rem 1.5rem', padding: '1.25rem 1.5rem', borderRadius: 'var(--radius) var(--radius) 0 0' }}>
           <div style={{ fontWeight: 700, color: '#fff', fontSize: '1rem' }}>⚡ ProjectForge Elite Generator</div>
-          <div style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12, marginTop: 2 }}>NVIDIA NIM · DeepSeek V4 Pro · Per-file streaming · No JSON parse failures</div>
+          <div style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12, marginTop: 2 }}>NVIDIA NIM · DeepSeek R1 · Per-file streaming · No JSON parse failures</div>
         </div>
 
         {/* Description */}
@@ -395,7 +395,7 @@ export default function GeneratePage() {
           onClick={generate} disabled={loading || !connected}>
           {loading
             ? <><div className="spinner" style={{ borderTopColor: '#fff', borderColor: 'rgba(255,255,255,0.3)' }} />{loadingMsg || 'Generating…'}</>
-            : '⚡ Generate with DeepSeek V4 Pro'
+            : '⚡ Generate with DeepSeek R1'
           }
         </button>
         {!connected && <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>Connect your backend above to enable generation</p>}

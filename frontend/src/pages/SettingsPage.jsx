@@ -107,7 +107,7 @@ export default function SettingsPage() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               {[
                 ['Version', 'Engineer Edition v4.0.0'],
-                ['AI Engine', 'NVIDIA NIM — DeepSeek V4 Pro'],
+                ['AI Engine', 'NVIDIA NIM — DeepSeek R1'],
                 ['Developer', 'Prashant S Nagani'],
                 ['License', 'MIT'],
               ].map(([k, v]) => (
