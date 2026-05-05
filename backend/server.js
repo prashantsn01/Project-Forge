@@ -2,14 +2,16 @@ const express = require('express');
 const cors = require('cors');
 const archiver = require('archiver');
 const path = require('path');
-const https = require('https');
+const Groq = require('groq-sdk');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors({ origin: process.env.CLIENT_URL || '*' }));
-app.use(express.json({ limit: '64mb' }));
+app.use(express.json({ limit: '16mb' }));
+
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // ─────────────────────────────────────────────────────────────
 // SYSTEM PROMPTS — ultra-precise per stack
@@ -357,673 +359,305 @@ GENERATE ALL FILES:
   return base + '\n\n' + guide;
 }
 
-
 // ─────────────────────────────────────────────────────────────
-// NVIDIA NIM — DeepSeek V4 Pro  (OpenAI-compatible REST)
-// No SDK needed — raw HTTPS keeps zero extra deps
-// ─────────────────────────────────────────────────────────────
-function nimCall(messages, maxTokens = 16384) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify({
-      model: 'deepseek-ai/deepseek-v4-pro',
-      messages,
-      max_tokens: maxTokens,
-      temperature: 0.10,
-      top_p: 0.90,
-      stream: false
-    });
-
-    const options = {
-      hostname: 'integrate.api.nvidia.com',
-      path: '/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
-        'Content-Length': Buffer.byteLength(body)
-      },
-      timeout: 600000  // 10 min — big files need time
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.error) return reject(new Error(parsed.error.message || JSON.stringify(parsed.error)));
-          const content = parsed.choices?.[0]?.message?.content || '';
-          resolve(content);
-        } catch (e) {
-          reject(new Error('NIM response parse failed: ' + data.slice(0, 300)));
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('NIM request timed out')); });
-    req.write(body);
-    req.end();
-  });
-}
-
-// ─────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────
-
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-/** Robust JSON extractor — handles fences, leading text, truncation, bare newlines in strings */
-function extractJSON(raw, expectArray = false) {
-  let s = raw
-    .replace(/^```json\s*/im, '')
-    .replace(/^```\s*/im, '')
-    .replace(/\s*```\s*$/m, '')
-    .trim();
-
-  if (expectArray) {
-    const f = s.indexOf('['), l = s.lastIndexOf(']');
-    if (f !== -1 && l !== -1) s = s.slice(f, l + 1);
-  } else {
-    const f = s.indexOf('{'), l = s.lastIndexOf('}');
-    if (f !== -1 && l !== -1) s = s.slice(f, l + 1);
-  }
-
-  // Fix bare newlines / tabs / backslashes inside JSON string values
-  s = sanitizeJSONStrings(s);
-
-  try { return JSON.parse(s); } catch (_) {}
-
-  // Try closing truncated structure
-  s = closeTruncated(s);
-  try { return JSON.parse(s); } catch (_) {}
-
-  // Strip last dangling key/value and close
-  s = s.replace(/,\s*"[^"]*"\s*:\s*"[^"]*$/, '');
-  s = s.replace(/,\s*"[^"]*"\s*:\s*$/, '');
-  s = closeTruncated(s);
-  return JSON.parse(s);
-}
-
-function sanitizeJSONStrings(s) {
-  let out = '', inStr = false, esc = false;
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i];
-    if (esc) { out += c; esc = false; continue; }
-    if (c === '\\') { esc = true; out += c; continue; }
-    if (c === '"') { inStr = !inStr; out += c; continue; }
-    if (inStr) {
-      if (c === '\n') { out += '\\n'; continue; }
-      if (c === '\r') { out += '\\r'; continue; }
-      if (c === '\t') { out += '\\t'; continue; }
-    }
-    out += c;
-  }
-  return out;
-}
-
-function closeTruncated(s) {
-  let inStr = false, esc = false;
-  for (const c of s) {
-    if (esc) { esc = false; continue; }
-    if (c === '\\') { esc = true; continue; }
-    if (c === '"') inStr = !inStr;
-  }
-  if (inStr) s += '"';
-  const opens  = (s.match(/\[/g)||[]).length - (s.match(/\]/g)||[]).length;
-  const openBr = (s.match(/\{/g)||[]).length - (s.match(/\}/g)||[]).length;
-  s += ']'.repeat(Math.max(0, opens)) + '}'.repeat(Math.max(0, openBr));
-  return s;
-}
-
-/** Replace ALL placeholder tokens with real domain names */
-function replacePlaceholders(obj, names) {
-  let s = JSON.stringify(obj);
-  s = s
-    .replace(/\[DomainList\]|\[Domain\]List/g,   names.PascalPlural)
-    .replace(/\[DomainForm\]|\[Domain\]Form/g,   `${names.Pascal}Form`)
-    .replace(/\[DomainDetail\]|\[Domain\]Detail/g, `${names.Pascal}Detail`)
-    .replace(/\[DomainModel\]/g,  names.Pascal)
-    .replace(/\[domainRoute\]/g,  names.lower)
-    .replace(/\[Domain\]/g,       names.Pascal)
-    .replace(/\[domain\]/g,       names.lower)
-    .replace(/\[RealDomain\]/g,   names.Pascal)
-    .replace(/\[realDomain\]/g,   names.lower)
-    .replace(/\[pkg\]/g,          'com.projectforge')
-    .replace(/YourDomain/g,       names.Pascal)
-    .replace(/yourDomain/g,       names.lower);
-  return JSON.parse(s);
-}
-
-/** Scan for leftover placeholder tokens */
-function findPlaceholders(obj) {
-  const s = JSON.stringify(obj);
-  const rx = /\[(Domain(?:List|Form|Detail|Model|Route)?|domainRoute|realDomain|RealDomain|pkg)\]/g;
-  const found = new Set();
-  let m;
-  while ((m = rx.exec(s)) !== null) found.add(m[0]);
-  return [...found];
-}
-
-/** Validate a chunk's files — check for stubs, TODOs, empty code */
-function validateChunk(folders, chunkName) {
-  const issues = [];
-  for (const folder of folders || []) {
-    for (const file of folder.files || []) {
-      if (!file.code || file.code.trim().length < 20) {
-        issues.push(`${folder.dir}${file.name} — code too short or empty`);
-      }
-      if (/\/\/ TODO|\/\/ implement later|\/\/ stub|placeholder/i.test(file.code || '')) {
-        issues.push(`${folder.dir}${file.name} — contains stub/TODO`);
-      }
-    }
-  }
-  if (issues.length) console.warn(`⚠️  [${chunkName}] issues:\n  ${issues.join('\n  ')}`);
-  return issues;
-}
-
-/** Extract real domain name from description using a tiny NIM call */
-async function extractDomainNames(description, stack) {
-  const prompt = `Project description: "${description}"
-Stack: ${stack}
-
-What is the PRIMARY entity/domain being managed in this app?
-Examples: "task manager" → Task | "blog platform" → Post | "inventory system" → Product | "hotel booking" → Booking | "student portal" → Student | "expense tracker" → Expense
-
-Reply ONLY with this exact JSON, nothing else:
-{"singular":"Task","plural":"Tasks","lower":"task","lowerPlural":"tasks"}`;
-
-  try {
-    const raw = await nimCall([{ role: 'user', content: prompt }], 200);
-    const parsed = extractJSON(raw);
-    const pascal = (parsed.singular || 'Item').trim();
-    return {
-      Pascal:       pascal,
-      PascalPlural: (parsed.plural  || pascal + 's').trim(),
-      lower:        (parsed.lower   || pascal.toLowerCase()).trim(),
-      lowerPlural:  (parsed.lowerPlural || pascal.toLowerCase() + 's').trim()
-    };
-  } catch {
-    const words = description.replace(/[^a-zA-Z ]/g, '').split(' ').filter(w => w.length > 3);
-    const noun = words[0]
-      ? words[0].charAt(0).toUpperCase() + words[0].slice(1).toLowerCase()
-      : 'Item';
-    return { Pascal: noun, PascalPlural: noun + 's', lower: noun.toLowerCase(), lowerPlural: noun.toLowerCase() + 's' };
-  }
-}
-
-/** Single chunk call with auto-retry on 429 or parse failure */
-async function runChunk(messages, chunkLabel, expectArray = false, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      console.log(`  → ${chunkLabel} attempt ${attempt}/${maxRetries} …`);
-      const raw = await nimCall(messages, 32768); // uncapped — let V4 Pro go deep
-      const parsed = extractJSON(raw, expectArray);
-      return parsed;
-    } catch (err) {
-      const is429 = /429|rate.?limit/i.test(err.message || '');
-      console.warn(`  ⚠️  ${chunkLabel} attempt ${attempt} failed: ${err.message?.slice(0,120)}`);
-      if (attempt < maxRetries) {
-        const wait = is429 ? 65000 : 8000;
-        console.log(`  ⏳ Waiting ${wait/1000}s before retry …`);
-        await sleep(wait);
-      } else {
-        throw new Error(`${chunkLabel} failed after ${maxRetries} attempts: ${err.message}`);
-      }
-    }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// GENERATE ENDPOINT — 6-chunk deep generation
+// GENERATE ENDPOINT
 // ─────────────────────────────────────────────────────────────
 app.post('/api/generate', async (req, res) => {
   const { description, stack, features, level, commentMode, scale } = req.body;
   if (!description || !stack) return res.status(400).json({ error: 'description and stack are required' });
-  if (!process.env.NVIDIA_API_KEY) return res.status(500).json({ error: 'NVIDIA_API_KEY not configured. Add it to backend/.env' });
+  if (!process.env.GROQ_API_KEY) return res.status(500).json({ error: 'GROQ_API_KEY not configured. Add it to backend/.env' });
 
-  const featList   = (features || []).join(', ') || 'auth, CRUD, dashboard';
-  const levelMap   = {
-    '1': 'Junior — heavy comments explaining every decision, simple patterns',
-    '3': 'Senior — clean SOLID code, comments only for non-obvious logic',
-    '4': 'Principal — production-grade: logging, rate limiting, health checks, full error handling'
+  const featList = (features || []).join(', ') || 'auth, CRUD, dashboard';
+  const levelMap = {
+    '1': 'Junior — heavy comments, simple patterns, explain every architectural decision',
+    '2': 'Mid-level — Repository pattern, service layer, moderate comments',
+    '3': 'Senior — SOLID principles, clean code, comments only for non-obvious logic',
+    '4': 'Principal — production-grade, logging, rate limiting, health checks, observability'
   };
   const commentMap = {
     learning: 'Add a comment above EVERY logical block explaining what AND why',
     standard: 'Comment architectural decisions and non-obvious logic only',
-    clean:    'JSDoc/KDoc on public APIs only, no inline clutter'
+    clean: 'JSDoc/KDoc/docstrings on public APIs only, no inline comments'
   };
   const scaleMap = {
-    mvp:        'MVP — core features only, optimise for speed',
-    standard:   'Production-ready — full feature set, proper error handling, validation',
-    enterprise: 'Enterprise — winston logging, rate limiting, helmet, Redis caching, Docker Compose, CI/CD yaml, health check endpoints'
+    mvp: 'MVP — core features only, optimise for speed of development',
+    standard: 'Production-ready — full feature set, proper error handling',
+    enterprise: 'Enterprise — add structured logging (winston/slf4j), rate limiting, caching layer, Docker Compose, CI/CD yaml, health check endpoints'
   };
 
-  const systemPrompt  = getSystemPrompt(stack);
-  const levelStr      = levelMap[level]       || levelMap['3'];
-  const commentStr    = commentMap[commentMode] || commentMap['standard'];
-  const scaleStr      = scaleMap[scale]        || scaleMap['standard'];
+  const systemPrompt = getSystemPrompt(stack);
 
-  const STRICT_RULES = `
-══════════════════════════════════════════════════════════
-ABSOLUTE ACCURACY RULES — EVERY SINGLE RULE IS MANDATORY
-══════════════════════════════════════════════════════════
-1.  ZERO placeholders. ZERO "// TODO". ZERO stubs. ZERO "// implement later".
-    Every single function body MUST be fully and completely implemented.
-2.  Every import must match a real file in this project or a real package in package.json.
-3.  All names (components, routes, models, variables) must be IDENTICAL across every file.
-    If App.jsx imports ProtectedRoute from './components/ProtectedRoute', that exact file must exist.
-4.  No circular imports. No missing exports. Every exported symbol has a matching import.
-5.  Every async function has try/catch with proper error response — no bare async.
-6.  React: no missing useEffect deps, no conditional hooks, no missing key props.
-7.  Node: every route file uses express.Router(), mounted in server.js with app.use().
-8.  DB: field names in schema MUST match field names used in every route handler exactly.
-9.  JSON output MUST be valid — escape all backslashes as \\\\, newlines as \\n inside strings.
-10. Write COMPLETE file contents — thousands of lines if needed. NEVER truncate.
-11. Every React component must be a complete working component with real logic, not shells.
-12. CSS must be complete with all classes referenced in JSX actually defined.
-13. All environment variables used in code must appear in .env.example.
-14. package.json must list EVERY package that is imported anywhere in the project.
-══════════════════════════════════════════════════════════`;
-
-  try {
-    console.log(`\n🚀 [ProjectForge V6] ${description.slice(0,80)}`);
-    console.log(`   Stack: ${stack} | Scale: ${scale} | Engine: DeepSeek V4 Pro (NIM)`);
-
-    // ── STEP 0: Extract real domain name ─────────────────────
-    console.log('\n[0/6] Extracting domain name …');
-    const names = await extractDomainNames(description, stack);
-    console.log(`   Domain → ${names.Pascal} / ${names.lower} / ${names.PascalPlural}`);
-
-    const ctx = `PROJECT: ${description}
-STACK: ${stack}
-FEATURES: ${featList}
-LEVEL: ${levelStr}
-COMMENTS: ${commentStr}
-SCALE: ${scaleStr}
-DOMAIN ENTITY: singular="${names.Pascal}", plural="${names.PascalPlural}", lower="${names.lower}"
-IMPORTANT: Use the real domain name "${names.Pascal}" everywhere. NEVER write [Domain] or any placeholder.`;
-
-    const isAndroid = stack.toLowerCase().includes('android');
-    const isFlutter = stack.toLowerCase().includes('flutter');
-    const isVanilla = stack.toLowerCase().includes('vanilla');
-    const isPython  = stack.toLowerCase().includes('python');
-    const isJava    = stack.toLowerCase().includes('java') || stack.toLowerCase().includes('spring');
-
-    let allFolders = [];
-    let projectName = '';
-    let projectDesc = '';
-
-    // ── CHUNK 1: Project metadata + Backend core ─────────────
-    console.log('\n[1/6] Backend core (server, config, middleware, models) …');
-    const chunk1 = await runChunk([
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `${ctx}\n${STRICT_RULES}
-
-Generate ONLY valid JSON — no markdown, no explanation:
+  const isAndroid = stack.toLowerCase().includes('android');
+  const fileTemplate = isAndroid ? `
 {
   "projectName": "PascalCaseName",
-  "description": "one sentence what this app does",
+  "description": "one sentence",
+  "stack": "${stack}",
+  "totalLines": 1800,
   "folders": [
-    {
-      "dir": "backend/",
-      "files": [
-        {"name":"server.js","color":"#f59e0b","code":"COMPLETE express server — require dotenv, connectDB, cors, json, mount ALL routes, listen. Full implementation."},
-        {"name":"package.json","color":"#34d399","code":"COMPLETE — all scripts and ALL dependencies used anywhere in backend"},
-        {"name":".env.example","color":"#ff4757","code":"ALL env vars used in this project"}
-      ]
-    },
-    {
-      "dir": "backend/config/",
-      "files": [
-        {"name":"db.js","color":"#f59e0b","code":"COMPLETE mongoose.connect with retry logic and error handling"}
-      ]
-    },
-    {
-      "dir": "backend/middleware/",
-      "files": [
-        {"name":"auth.js","color":"#f59e0b","code":"COMPLETE JWT verifyToken middleware — extract Bearer, verify, attach req.user, handle errors"},
-        {"name":"errorHandler.js","color":"#f59e0b","code":"COMPLETE global error handler middleware"}${scaleStr.includes('Enterprise') ? `,
-        {"name":"rateLimiter.js","color":"#f59e0b","code":"COMPLETE express-rate-limit setup"},
-        {"name":"logger.js","color":"#f59e0b","code":"COMPLETE winston logger setup"}` : ''}
-      ]
-    },
-    {
-      "dir": "backend/models/",
-      "files": [
-        {"name":"User.js","color":"#f59e0b","code":"COMPLETE mongoose User schema — name, email, password with bcrypt pre-save hook and comparePassword method"},
-        {"name":"${names.Pascal}.js","color":"#f59e0b","code":"COMPLETE mongoose ${names.Pascal} schema — ALL fields relevant to '${description}', user ref, timestamps, indexes"}
-      ]
-    }
-  ]
-}` }
-    ], '1/6 Backend core');
-
-    projectName = chunk1.projectName || 'ProjectForge';
-    projectDesc = chunk1.description || description;
-    let c1folders = replacePlaceholders(chunk1.folders || [], names);
-    validateChunk(c1folders, 'Chunk1');
-    allFolders.push(...c1folders);
-
-    await sleep(3000);
-
-    // ── CHUNK 2: Backend routes (auth + domain CRUD) ──────────
-    console.log('\n[2/6] Backend routes (auth + full CRUD) …');
-    const chunk2 = await runChunk([
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `${ctx}\n${STRICT_RULES}
-Project name: "${projectName}"
-
-Generate ONLY valid JSON (folders array only, no outer object) — no markdown:
-[
-  {
-    "dir": "backend/routes/",
-    "files": [
-      {
-        "name": "auth.js",
-        "color": "#f59e0b",
-        "code": "COMPLETE Express Router — POST /register (validate fields, hash password, save User, sign JWT, return token+user), POST /login (find by email, comparePassword, sign JWT, return token+user), GET /me (verifyToken middleware, return req.user data). Full implementation with proper error handling."
-      },
-      {
-        "name": "${names.lower}.js",
-        "color": "#f59e0b",
-        "code": "COMPLETE Express Router for ${names.Pascal} — GET / (verifyToken, fetch all by user, populate if needed, return array), POST / (verifyToken, validate body, create ${names.Pascal} with user=req.user.id, return created), GET /:id (verifyToken, find by id+user, 404 if not found), PUT /:id (verifyToken, ownership check via find({_id,user}), update all fields, return updated), DELETE /:id (verifyToken, ownership check, delete, return success). Full implementation."
-      }
-    ]
-  }
-]` }
-    ], '2/6 Backend routes', true);
-
-    let c2folders = replacePlaceholders(chunk2 || [], names);
-    validateChunk(c2folders, 'Chunk2');
-    allFolders.push(...c2folders);
-
-    await sleep(3000);
-
-    // ── CHUNK 3: Frontend foundation ──────────────────────────
-    console.log('\n[3/6] Frontend foundation (App, Auth, API util, CSS) …');
-    const chunk3 = await runChunk([
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `${ctx}\n${STRICT_RULES}
-Project name: "${projectName}"
-
-Generate ONLY valid JSON (folders array only) — no markdown:
-[
-  {
-    "dir": "frontend/src/",
-    "files": [
-      {
-        "name": "App.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE React app with BrowserRouter. Routes: /login → <Login/>, / → <ProtectedRoute/> wrapping <Layout/> with nested <Route index element=<Dashboard/>/> and <Route path='${names.lowerPlural}' element=<${names.PascalPlural}Page/>/> and <Route path='${names.lowerPlural}/new' element=<${names.Pascal}Form/>/> and <Route path='${names.lowerPlural}/:id/edit' element=<${names.Pascal}Form/>/>"
-      },
-      {
-        "name": "main.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE — import React, createRoot, App, AuthProvider, ToastProvider. Render with all providers."
-      },
-      {
-        "name": "index.css",
-        "color": "#3b82f6",
-        "code": "COMPLETE PROFESSIONAL CSS — CSS variables for colors/spacing/shadows, full reset, body/html layout, .app-layout grid, navbar styles, sidebar styles with active states, all card styles, table styles with hover/striped rows, form styles, button variants (primary gradient/secondary/ghost/danger), toast notification styles with slide-in animation, spinner/loader styles, modal styles, badge styles, empty state styles, responsive breakpoints for mobile. MINIMUM 400 lines. Every class used in any JSX component must be defined here."
-      }
-    ]
-  },
-  {
-    "dir": "frontend/src/context/",
-    "files": [
-      {
-        "name": "AuthContext.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE — createContext, AuthProvider with useState(user,token), login(token,user) saves to localStorage+state, logout() clears localStorage+state+redirects, isAuthenticated computed bool, useEffect on mount restores token+user from localStorage. Export useAuth hook."
-      },
-      {
-        "name": "ToastContext.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE — createContext, ToastProvider with useState(toasts[]), showToast(message,type,duration=3000) adds toast with unique id, auto-removes after duration. Export useToast hook. Renders toast list absolutely positioned."
-      }
-    ]
-  },
-  {
-    "dir": "frontend/src/utils/",
-    "files": [
-      {
-        "name": "api.js",
-        "color": "#f59e0b",
-        "code": "COMPLETE axios instance with baseURL from env. Request interceptor: reads token from localStorage, sets Authorization: Bearer header. Response interceptor: catches 401 → clear localStorage → redirect to /login. Export default api instance."
-      }
-    ]
-  },
-  {
-    "dir": "frontend/",
-    "files": [
-      {
-        "name": "package.json",
-        "color": "#34d399",
-        "code": "COMPLETE — name, version, scripts (dev/build/preview), all deps: react, react-dom, react-router-dom, axios, vite, @vitejs/plugin-react. Exact versions."
-      },
-      {
-        "name": "vite.config.js",
-        "color": "#f59e0b",
-        "code": "COMPLETE — defineConfig with react plugin, server.proxy '/api' → 'http://localhost:3001'"
-      },
-      {
-        "name": ".env.example",
-        "color": "#ff4757",
-        "code": "VITE_API_URL=http://localhost:3001"
-      }
-    ]
-  }
-]` }
-    ], '3/6 Frontend foundation', true);
-
-    let c3folders = replacePlaceholders(chunk3 || [], names);
-    validateChunk(c3folders, 'Chunk3');
-    allFolders.push(...c3folders);
-
-    await sleep(3000);
-
-    // ── CHUNK 4: Frontend components ──────────────────────────
-    console.log('\n[4/6] Frontend components (Navbar, Sidebar, ProtectedRoute, Layout, Loader, Toast) …');
-    const chunk4 = await runChunk([
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `${ctx}\n${STRICT_RULES}
-Project name: "${projectName}"
-Domain entity: ${names.Pascal} (plural: ${names.PascalPlural})
-
-Generate ONLY valid JSON (folders array only) — no markdown:
-[
-  {
-    "dir": "frontend/src/components/",
-    "files": [
-      {
-        "name": "ProtectedRoute.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE — import useAuth, if !isAuthenticated return <Navigate to='/login' replace />, else return <Outlet />"
-      },
-      {
-        "name": "Layout.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE — renders <div className='app-layout'> containing <Navbar/> + <Sidebar activePage from useLocation/> + <main className='main-content'><Outlet/></main>"
-      },
-      {
-        "name": "Navbar.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE sticky navbar — logo/brand name, right side shows user name from useAuth, logout button that calls auth.logout(). Mobile hamburger menu toggle. Full CSS class usage matching index.css."
-      },
-      {
-        "name": "Sidebar.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE sidebar — nav links: Dashboard (/ icon 📊), ${names.PascalPlural} (/${names.lowerPlural} icon relevant emoji). Use NavLink for active class. Collapse on mobile. Full implementation."
-      },
-      {
-        "name": "Loader.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE centered spinner component — div with spinner CSS class, accepts size prop"
-      },
-      {
-        "name": "Toast.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE toast display component — reads toasts from useToast context, renders each with type-based styling (success=green, error=red, info=blue, warning=amber), close button, auto-dismiss animation"
-      },
-      {
-        "name": "Modal.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE reusable modal — accepts isOpen, onClose, title, children props. Backdrop click closes. Escape key closes. Render portal or inline with proper overlay styling."
-      },
-      {
-        "name": "ConfirmDialog.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE confirm dialog built on Modal — props: isOpen, onClose, onConfirm, title, message. Has Cancel + Confirm (danger) buttons."
-      }
-    ]
-  }
-]` }
-    ], '4/6 Frontend components', true);
-
-    let c4folders = replacePlaceholders(chunk4 || [], names);
-    validateChunk(c4folders, 'Chunk4');
-    allFolders.push(...c4folders);
-
-    await sleep(3000);
-
-    // ── CHUNK 5: Frontend pages ────────────────────────────────
-    console.log('\n[5/6] Frontend pages (Login, Dashboard, List, Form) …');
-    const chunk5 = await runChunk([
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `${ctx}\n${STRICT_RULES}
-Project name: "${projectName}"
-Domain entity: ${names.Pascal} (plural: ${names.PascalPlural}, route: /${names.lowerPlural})
-
-Generate ONLY valid JSON (folders array only) — no markdown:
-[
-  {
-    "dir": "frontend/src/pages/",
-    "files": [
-      {
-        "name": "Login.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE login+register page — useState for email, password, name, isRegister toggle. On submit: call POST /api/auth/login or /register via api.js, on success call auth.login(token,user), navigate to /. Show loading spinner during submit. Show error message on failure. Beautiful centered card design. Full form validation."
-      },
-      {
-        "name": "Dashboard.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE dashboard — useEffect fetches GET /api/${names.lowerPlural} to get real data, useState for items+loading+error. Shows 4 stat cards: Total ${names.PascalPlural} (count), Recent Activity, quick actions. Shows a recent items list (last 5) as cards/table rows with name, date, status. Show Loader while loading. Show empty state if no data. Use useAuth for user greeting. Full implementation with real API data."
-      },
-      {
-        "name": "${names.PascalPlural}Page.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE ${names.Pascal} list page — useEffect fetches GET /api/${names.lowerPlural}, useState for items+loading+error+search+deleteId. Renders a searchable, filterable table/card grid of all ${names.PascalPlural}. Each row has Edit button (navigate to /${names.lowerPlural}/:id/edit) and Delete button (opens ConfirmDialog). On confirm delete: call DELETE /api/${names.lowerPlural}/:id then remove from state and show toast. Add New button navigates to /${names.lowerPlural}/new. Show Loader while loading. Show empty state with CTA if no items. Full search filter on client side. Full implementation."
-      },
-      {
-        "name": "${names.Pascal}Form.jsx",
-        "color": "#61dafb",
-        "code": "COMPLETE ${names.Pascal} create/edit form — useParams to get id (if exists = edit mode). useEffect: if edit mode fetch GET /api/${names.lowerPlural}/:id and pre-fill form. useState for all form fields (ALL fields relevant to '${description}' for a ${names.Pascal}). On submit: if edit call PUT /api/${names.lowerPlural}/:id else POST /api/${names.lowerPlural}. On success: show success toast, navigate back to /${names.lowerPlural}. Show inline validation errors. Cancel button navigates back. Full implementation."
-      }
-    ]
-  }
-]` }
-    ], '5/6 Frontend pages', true);
-
-    let c5folders = replacePlaceholders(chunk5 || [], names);
-    validateChunk(c5folders, 'Chunk5');
-    allFolders.push(...c5folders);
-
-    await sleep(3000);
-
-    // ── CHUNK 6: Config + README + Insights ────────────────────
-    console.log('\n[6/6] Config files, README, insights …');
-    const chunk6 = await runChunk([
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `${ctx}\n${STRICT_RULES}
-Project name: "${projectName}"
-Domain entity: ${names.Pascal}
-
-Generate ONLY valid JSON — no markdown:
+    { "dir": "app/src/main/", "files": [{ "name": "AndroidManifest.xml", "color": "#ff8c42", "code": "FULL XML" }] },
+    { "dir": "app/src/main/java/com/projectforge/", "files": [{ "name": "MyApplication.kt", "color": "#7c52ff", "code": "FULL KOTLIN" }] },
+    { "dir": "app/src/main/java/com/projectforge/ui/theme/", "files": [
+      { "name": "Theme.kt", "color": "#7c52ff", "code": "FULL" },
+      { "name": "Color.kt", "color": "#7c52ff", "code": "FULL" }
+    ]},
+    { "dir": "app/src/main/java/com/projectforge/navigation/", "files": [
+      { "name": "NavGraph.kt", "color": "#7c52ff", "code": "FULL" },
+      { "name": "Screen.kt", "color": "#7c52ff", "code": "FULL" }
+    ]},
+    { "dir": "app/src/main/java/com/projectforge/ui/screens/", "files": [
+      { "name": "HomeScreen.kt", "color": "#7c52ff", "code": "FULL composable" },
+      { "name": "[Domain]ListScreen.kt", "color": "#7c52ff", "code": "FULL composable" }
+    ]},
+    { "dir": "app/src/main/java/com/projectforge/viewmodel/", "files": [
+      { "name": "[Domain]ViewModel.kt", "color": "#7c52ff", "code": "FULL HiltViewModel" }
+    ]},
+    { "dir": "app/src/main/java/com/projectforge/data/local/", "files": [
+      { "name": "AppDatabase.kt", "color": "#7c52ff", "code": "FULL Room" },
+      { "name": "[Domain]Entity.kt", "color": "#7c52ff", "code": "FULL Entity" },
+      { "name": "[Domain]Dao.kt", "color": "#7c52ff", "code": "FULL DAO" }
+    ]},
+    { "dir": "app/src/main/java/com/projectforge/data/remote/", "files": [
+      { "name": "ApiService.kt", "color": "#7c52ff", "code": "FULL Retrofit interface" }
+    ]},
+    { "dir": "app/src/main/java/com/projectforge/data/repository/", "files": [
+      { "name": "[Domain]Repository.kt", "color": "#7c52ff", "code": "FULL" }
+    ]},
+    { "dir": "app/src/main/java/com/projectforge/di/", "files": [
+      { "name": "AppModule.kt", "color": "#7c52ff", "code": "FULL Hilt module" }
+    ]},
+    { "dir": "app/src/main/java/com/projectforge/utils/", "files": [
+      { "name": "Resource.kt", "color": "#7c52ff", "code": "FULL" },
+      { "name": "Constants.kt", "color": "#7c52ff", "code": "FULL" }
+    ]},
+    { "dir": "app/src/main/res/values/", "files": [
+      { "name": "strings.xml", "color": "#ff8c42", "code": "FULL" }
+    ]},
+    { "dir": "app/", "files": [{ "name": "build.gradle", "color": "#02569b", "code": "FULL with all deps and exact versions" }]},
+    { "dir": "", "files": [
+      { "name": "build.gradle", "color": "#02569b", "code": "project-level build.gradle" },
+      { "name": "settings.gradle", "color": "#02569b", "code": "include :app" },
+      { "name": "README.md", "color": "#a78bfa", "code": "FULL setup guide" }
+    ]}
+  ],
+  "setupSteps": ["Open project in Android Studio", "Sync Gradle files", "Run on emulator/device"],
+  "insights": [{"t": "Architecture explanation", "b": "MVVM + Repository pattern explanation with <code>example</code>"}]
+}` : `
 {
+  "projectName": "PascalCaseName",
+  "description": "one sentence",
+  "stack": "${stack}",
+  "totalLines": 1400,
   "folders": [
-    {
-      "dir": "",
-      "files": [
-        {
-          "name": "README.md",
-          "color": "#a78bfa",
-          "code": "COMPLETE README — project name + description, tech stack list, features list, folder structure tree, prerequisites, step-by-step setup (install, env setup, run backend, run frontend), API endpoints reference table (method, path, auth, description for every endpoint), environment variables table, screenshots section placeholder, license"
-        }
-      ]
-    }${scaleStr.includes('Enterprise') ? `,
-    {
-      "dir": "",
-      "files": [
-        {
-          "name": "docker-compose.yml",
-          "color": "#ff6b6b",
-          "code": "COMPLETE docker-compose — services: mongodb, backend (build ./backend, env_file, ports 3001), frontend (build ./frontend, ports 5173), networks"
-        },
-        {
-          "name": ".github/workflows/ci.yml",
-          "color": "#ff6b6b",
-          "code": "COMPLETE GitHub Actions CI — on push/PR to main, jobs: lint+test backend, lint+test frontend, build check"
-        }
-      ]
-    }` : ''}
+    { "dir": "backend/", "files": [
+      { "name": "server.js", "color": "#f59e0b", "code": "FULL server setup" },
+      { "name": "package.json", "color": "#34d399", "code": "FULL" },
+      { "name": ".env.example", "color": "#ff4757", "code": "FULL" }
+    ]},
+    { "dir": "backend/config/", "files": [{ "name": "db.js", "color": "#f59e0b", "code": "FULL" }]},
+    { "dir": "backend/middleware/", "files": [{ "name": "auth.js", "color": "#f59e0b", "code": "FULL JWT middleware" }]},
+    { "dir": "backend/models/", "files": [
+      { "name": "User.js", "color": "#f59e0b", "code": "FULL mongoose model" },
+      { "name": "[DomainModel].js", "color": "#f59e0b", "code": "FULL mongoose model — replace [DomainModel] with real name" }
+    ]},
+    { "dir": "backend/routes/", "files": [
+      { "name": "auth.js", "color": "#f59e0b", "code": "FULL auth routes" },
+      { "name": "[domainRoute].js", "color": "#f59e0b", "code": "FULL CRUD routes — replace [domainRoute] with real name" }
+    ]},
+    { "dir": "frontend/src/", "files": [
+      { "name": "App.jsx", "color": "#61dafb", "code": "FULL" },
+      { "name": "main.jsx", "color": "#61dafb", "code": "FULL" },
+      { "name": "index.css", "color": "#3b82f6", "code": "COMPLETE professional CSS" }
+    ]},
+    { "dir": "frontend/src/context/", "files": [{ "name": "AuthContext.jsx", "color": "#61dafb", "code": "FULL" }]},
+    { "dir": "frontend/src/utils/", "files": [{ "name": "api.js", "color": "#f59e0b", "code": "FULL axios instance with interceptors" }]},
+    { "dir": "frontend/src/components/", "files": [
+      { "name": "Navbar.jsx", "color": "#61dafb", "code": "FULL" },
+      { "name": "Sidebar.jsx", "color": "#61dafb", "code": "FULL" },
+      { "name": "Toast.jsx", "color": "#61dafb", "code": "FULL" },
+      { "name": "Loader.jsx", "color": "#61dafb", "code": "FULL" }
+    ]},
+    { "dir": "frontend/src/pages/", "files": [
+      { "name": "Login.jsx", "color": "#61dafb", "code": "FULL login+register page" },
+      { "name": "Dashboard.jsx", "color": "#61dafb", "code": "FULL dashboard with real API data" },
+      { "name": "[DomainList].jsx", "color": "#61dafb", "code": "FULL list page — replace with real name" },
+      { "name": "[DomainForm].jsx", "color": "#61dafb", "code": "FULL form page — replace with real name" }
+    ]},
+    { "dir": "frontend/", "files": [
+      { "name": "vite.config.js", "color": "#f59e0b", "code": "FULL with proxy" },
+      { "name": "package.json", "color": "#34d399", "code": "FULL" },
+      { "name": ".env.example", "color": "#ff4757", "code": "VITE_API_URL=http://localhost:3001" }
+    ]},
+    { "dir": "", "files": [{ "name": "README.md", "color": "#a78bfa", "code": "FULL setup guide with all commands" }]}
   ],
   "setupSteps": [
     "cd backend && npm install",
-    "cp backend/.env.example backend/.env  →  fill MONGO_URI and JWT_SECRET",
+    "cp backend/.env.example backend/.env  (fill MONGO_URI + JWT_SECRET)",
     "cd frontend && npm install",
-    "cp frontend/.env.example frontend/.env",
     "Terminal 1: cd backend && npm run dev",
     "Terminal 2: cd frontend && npm run dev",
-    "Open http://localhost:5173"
+    "Open http://localhost:5173 — register an account to begin"
   ],
   "insights": [
-    {"t": "Architecture", "b": "Clean MVC separation — models, routes, middleware each in own folder. <code>server.js</code> is only the entry point."},
-    {"t": "JWT Auth Flow", "b": "<code>POST /api/auth/login</code> returns a signed token. Frontend stores it in localStorage and sends it as <code>Authorization: Bearer</code> on every request."},
-    {"t": "Ownership Security", "b": "Every PUT/DELETE checks <code>{_id: req.params.id, user: req.user.id}</code> — no user can modify another user's ${names.Pascal}."},
-    {"t": "React Context", "b": "AuthContext provides login/logout/isAuthenticated globally. ToastContext provides showToast() from any component without prop drilling."},
-    {"t": "Axios Interceptors", "b": "One request interceptor adds the Bearer token automatically. One response interceptor catches 401 and redirects to login — no per-call handling needed."}
+    { "t": "Why modular route files?", "b": "Each resource gets its own Router file, keeping server.js clean. <code>app.use('/api/auth', require('./routes/auth'))</code> mounts the entire auth sub-router." },
+    { "t": "How JWT auth middleware works", "b": "Every protected route runs <code>verifyToken</code> first. It extracts the Bearer token, calls <code>jwt.verify()</code>, and attaches the decoded user to <code>req.user</code>." },
+    { "t": "Axios interceptors explained", "b": "The request interceptor automatically adds <code>Authorization: Bearer token</code> from localStorage. The 401 interceptor catches expired tokens and redirects to login." },
+    { "t": "bcrypt password security", "b": "Passwords are hashed in a Mongoose <code>pre('save')</code> hook with <code>bcrypt.hash(password, 12)</code>. Plain text is never stored, only the hash." }
   ]
-}` }
-    ], '6/6 Config + README', false);
+}`;
 
-    let c6folders = replacePlaceholders(chunk6.folders || [], names);
-    allFolders.push(...c6folders);
+  const userPrompt = `Generate a COMPLETE, 100% WORKING, ZERO-ERROR project. Every single file must be fully implemented with no stubs.
 
-    // ── FINAL MERGE + VALIDATION ──────────────────────────────
-    const leftover = findPlaceholders(allFolders);
-    if (leftover.length) {
-      console.warn(`⚠️  Leftover placeholders found: ${leftover.join(', ')} — force-replacing …`);
-      allFolders = replacePlaceholders(allFolders, names);
+PROJECT: ${description}
+STACK: ${stack}
+FEATURES: ${featList}
+LEVEL: ${levelMap[level] || levelMap['3']}
+COMMENTS: ${commentMap[commentMode] || commentMap['standard']}
+SCALE: ${scaleMap[scale] || scaleMap['standard']}
+
+ACCURACY CHECKLIST — verify before outputting:
+✓ Every import in every file has a matching source file or package.json dependency
+✓ All component/class names are consistent across all files (no spelling drift)
+✓ Every async function has try/catch
+✓ No TODO, no placeholder comments, no "// implement this"
+✓ All [Domain], [domain], [DomainModel], [DomainList] placeholders replaced with the REAL domain name from the project description
+✓ package.json / build.gradle contains ALL packages that are imported in the code
+✓ JSON response is valid — all special characters inside code strings are escaped
+
+Return ONLY the JSON below — no markdown, no explanation, nothing before or after the JSON:
+${fileTemplate}
+
+REPEAT: Replace ALL bracket placeholders like [Domain], [DomainModel], [DomainList], [DomainForm], [domainRoute] with real domain-specific names derived from the project description.`;
+
+  // ── TPM-safe streaming call. Caps output at maxTokens per request.
+  async function groqCall(messages, maxTokens = 7000) {
+    const stream = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      max_tokens: maxTokens,
+      temperature: 0.15,
+      top_p: 0.9,
+      stream: true,
+      messages
+    });
+    let text = '', finishReason = null;
+    for await (const chunk of stream) {
+      text += chunk.choices?.[0]?.delta?.content || '';
+      if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
+    }
+    if (finishReason === 'length') console.warn('⚠️  finish_reason=length — batch may be too large');
+    return text;
+  }
+
+  // Split folders into batches so each batch's estimated output stays under 6 000 tokens.
+  function batchFolders(folders, tokenBudget = 6000) {
+    const batches = [];
+    let current = [], currentEst = 0;
+    for (const folder of folders) {
+      const est = JSON.stringify(folder).length * 0.4;
+      if (current.length && currentEst + est > tokenBudget) { batches.push(current); current = []; currentEst = 0; }
+      current.push(folder); currentEst += est;
+    }
+    if (current.length) batches.push(current);
+    return batches;
+  }
+
+  try {
+    console.log(`\n→ [ProjectForge Elite] ${description.slice(0,80)}`);
+    console.log(`→ Stack: ${stack} | Scale: ${scale} | Level: ${level}`);
+
+    // ── PASS 1: skeleton — metadata + file list, no code (stays well under 4 000 tokens)
+    const skeletonPrompt = `${userPrompt}\n\nFIRST-PASS ONLY: Output the full JSON structure but set every "code" field to the string "PENDING". Establish the correct projectName, description, stack, folders, file names, colors, setupSteps, and insights. No code yet.`;
+
+    const skeletonRaw = await groqCall(
+      [{ role: 'system', content: systemPrompt }, { role: 'user', content: skeletonPrompt }],
+      3500
+    );
+
+    let skeletonStr = skeletonRaw.replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/,'').trim();
+    const sb = skeletonStr.indexOf('{'), se = skeletonStr.lastIndexOf('}');
+    if (sb !== -1 && se !== -1) skeletonStr = skeletonStr.slice(sb, se + 1);
+
+    let project;
+    try { project = JSON.parse(skeletonStr); }
+    catch(_) {
+      return res.status(502).json({ error: 'Failed to generate project skeleton. Please try again.', raw: skeletonRaw.slice(0,400) });
     }
 
-    const project = {
-      projectName,
-      description: projectDesc,
-      stack,
-      folders: allFolders,
-      setupSteps: chunk6.setupSteps || [],
-      insights:   chunk6.insights   || []
-    };
+    // ── PASS 2: fill code in batches, each batch ≤ 7 000 output tokens (~12k TPM safe)
+    const allFolders = project.folders || [];
+    const batches = batchFolders(allFolders);
+    const fileIndex = allFolders.flatMap(f => (f.files||[]).map(file => `${f.dir}${file.name}`)).join(', ');
+    console.log(`→ Skeleton ready — ${allFolders.length} folders, ${batches.length} batch(es)`);
 
-    // Count lines
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      if (i > 0) await new Promise(r => setTimeout(r, 1200)); // 1.2 s gap — stay under 12k TPM
+
+      const batchFileList = batch.flatMap(f => (f.files||[]).map(file => `${f.dir}${file.name}`)).join(', ');
+      console.log(`→ Batch ${i+1}/${batches.length}: ${batchFileList}`);
+
+      const batchPrompt = `You are completing code for a subset of files in a larger project.
+
+PROJECT: ${description}
+STACK: ${stack}
+LEVEL: ${levelMap[level] || levelMap['3']}
+COMMENTS: ${commentMap[commentMode] || commentMap['standard']}
+FULL FILE LIST (for import consistency): ${fileIndex}
+
+Write COMPLETE, working code for ONLY the following files. Return a JSON ARRAY of folder objects with the same structure as the input but with "code" fields fully implemented. No markdown, no explanation, only the JSON array:
+${JSON.stringify(batch, null, 2)}`;
+
+      const batchRaw = await groqCall(
+        [{ role: 'system', content: systemPrompt }, { role: 'user', content: batchPrompt }],
+        7000
+      );
+
+      let batchStr = batchRaw.replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/,'').trim();
+      const ab = batchStr.indexOf('['), ae = batchStr.lastIndexOf(']');
+      if (ab !== -1 && ae !== -1) batchStr = batchStr.slice(ab, ae + 1);
+
+      let filledBatch;
+      try { filledBatch = JSON.parse(batchStr); }
+      catch (_) {
+        let repaired = batchStr;
+        repaired += ']'.repeat(Math.max(0,(repaired.match(/\[/g)||[]).length-(repaired.match(/\]/g)||[]).length));
+        repaired += '}'.repeat(Math.max(0,(repaired.match(/\{/g)||[]).length-(repaired.match(/\}/g)||[]).length));
+        try { filledBatch = JSON.parse(repaired); console.log(`Batch ${i+1} repaired`); }
+        catch (_2) { console.error(`Batch ${i+1} parse failed — skipping`); filledBatch = batch; }
+      }
+
+      // Merge filled code back by matching dir + filename
+      for (const filledFolder of filledBatch) {
+        const target = project.folders.find(f => f.dir === filledFolder.dir);
+        if (!target) continue;
+        for (const filledFile of (filledFolder.files || [])) {
+          const targetFile = target.files?.find(f => f.name === filledFile.name);
+          if (targetFile && filledFile.code && filledFile.code !== 'PENDING') {
+            targetFile.code = filledFile.code;
+          }
+        }
+      }
+    }
+
+
+    // Count real lines
     let totalLines = 0;
-    project.folders.forEach(f =>
+    (project.folders || []).forEach(f =>
       (f.files || []).forEach(file => {
         if (file.code) totalLines += file.code.split('\n').length;
       })
     );
     project.totalLines = totalLines;
 
-    const fileCount = project.folders.reduce((a, f) => a + (f.files || []).length, 0);
-    console.log(`\n✅ ${projectName} — ${totalLines.toLocaleString()} lines across ${fileCount} files`);
-
+    const fileCount = (project.folders||[]).reduce((a,f)=>a+(f.files||[]).length,0);
+    console.log(`→ ✅ ${project.projectName} — ${totalLines} lines, ${fileCount} files`);
     res.json({ ok: true, project });
 
   } catch (err) {
-    console.error('❌ Generation error:', err.message);
-    const is429 = /429|rate.?limit/i.test(err.message || '');
-    if (is429) return res.status(429).json({ error: 'NIM rate limit hit — wait 60s and retry.' });
+    console.error('→ Error:', err.message);
+    if (err.code === 'ETIMEDOUT' || err.message?.includes('timed out')) {
+      return res.status(504).json({ error: 'Generation timed out — try a shorter description or simpler stack.' });
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -1055,23 +689,19 @@ app.post('/api/download', (req, res) => {
 // HEALTH
 // ─────────────────────────────────────────────────────────────
 app.get('/api/health', (_, res) => res.json({
-  status:    'ok',
-  version:   '6.0.0',
-  engine:    'NVIDIA NIM — DeepSeek V4 Pro',
-  accuracy:  '95%+',
-  mode:      '6-chunk deep generation | no token limits | auto-retry',
+  status: 'ok', version: '5.0.0',
+  engine: 'Groq + LLaMA 3.3 70B',
+  accuracy: '85%+',
   developer: 'Prashant S Nagani'
 }));
 
 app.listen(PORT, () => {
-  console.log(`\n╔══════════════════════════════════════════════════════╗`);
-  console.log(`║   ProjectForge Elite  v6.0.0                         ║`);
-  console.log(`║   Engine : NVIDIA NIM — DeepSeek V4 Pro              ║`);
-  console.log(`║   Mode   : 6-chunk deep gen | No token limits        ║`);
-  console.log(`║   Accuracy: 95%+ | Auto-retry | Placeholder-free     ║`);
-  console.log(`║   Developer: Prashant S Nagani                       ║`);
-  console.log(`╚══════════════════════════════════════════════════════╝`);
+  console.log(`\n╔════════════════════════════════════════════════╗`);
+  console.log(`║   ProjectForge Elite  v5.0.0                   ║`);
+  console.log(`║   Accuracy: 85%+ | Android Studio: ✅          ║`);
+  console.log(`║   Developer: Prashant S Nagani                 ║`);
+  console.log(`╚════════════════════════════════════════════════╝`);
   console.log(`\n🔥 Backend → http://localhost:${PORT}`);
-  console.log(`🤖 AI: DeepSeek V4 Pro via NVIDIA NIM (no token cap)`);
-  console.log(`🔑 NIM Key: ${process.env.NVIDIA_API_KEY ? '✅ Loaded' : '❌ Missing — add NVIDIA_API_KEY to .env'}\n`);
+  console.log(`⚡ AI: Groq + LLaMA 3.3 70B (temp=0.15 for accuracy)`);
+  console.log(`🔑 API Key: ${process.env.GROQ_API_KEY ? '✅' : '❌ Missing — add to .env'}\n`);
 });
