@@ -362,6 +362,12 @@ GENERATE ALL FILES:
 // NVIDIA NIM — DeepSeek V4 Pro  (OpenAI-compatible REST)
 // No SDK needed — raw HTTPS keeps zero extra deps
 // ─────────────────────────────────────────────────────────────
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 10
+});
+
 function nimCall(messages, maxTokens = 16384) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
@@ -377,17 +383,19 @@ function nimCall(messages, maxTokens = 16384) {
       hostname: 'integrate.api.nvidia.com',
       path: '/v1/chat/completions',
       method: 'POST',
+      agent: httpsAgent,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
-        'Content-Length': Buffer.byteLength(body)
-      },
-      timeout: 600000  // 10 min — big files need time
+        'Content-Length': Buffer.byteLength(body),
+        'Connection': 'keep-alive'
+      }
     };
 
     const req = https.request(options, (res) => {
       let data = '';
-      res.on('data', chunk => data += chunk);
+      res.socket && res.socket.setTimeout(600000);
+      res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
@@ -395,13 +403,16 @@ function nimCall(messages, maxTokens = 16384) {
           const content = parsed.choices?.[0]?.message?.content || '';
           resolve(content);
         } catch (e) {
-          reject(new Error('NIM response parse failed: ' + data.slice(0, 300)));
+          reject(new Error('NIM parse failed: ' + data.slice(0, 300)));
         }
       });
+      res.on('error', reject);
     });
 
+    req.setTimeout(600000, () => {
+      req.destroy(new Error('NIM socket timeout after 600s'));
+    });
     req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('NIM request timed out')); });
     req.write(body);
     req.end();
   });
@@ -527,27 +538,38 @@ async function extractDomainNames(description, stack) {
   const prompt = `Project description: "${description}"
 Stack: ${stack}
 
-What is the PRIMARY entity/domain being managed in this app?
-Examples: "task manager" → Task | "blog platform" → Post | "inventory system" → Product | "hotel booking" → Booking | "student portal" → Student | "expense tracker" → Expense
+Identify the PRIMARY data entity (the main thing being created/stored/managed) in this app.
+IGNORE action words like: generate, create, build, make, develop, design, get, an, a, the, for, with
+Focus on the NOUN that describes what the app manages.
+
+Examples:
+- "generate an event management system" → Event
+- "build a task manager app" → Task
+- "create a blog platform" → Post
+- "inventory tracking system" → Product
+- "hotel booking app" → Booking
+- "student portal" → Student
+- "expense tracker" → Expense
+- "restaurant menu management" → MenuItem
 
 Reply ONLY with this exact JSON, nothing else:
-{"singular":"Task","plural":"Tasks","lower":"task","lowerPlural":"tasks"}`;
+{"singular":"Event","plural":"Events","lower":"event","lowerPlural":"events"}`;
 
   try {
-    const raw = await nimCall([{ role: 'user', content: prompt }], 200);
+    const raw = await nimCall([{ role: 'user', content: prompt }], 300);
     const parsed = extractJSON(raw);
     const pascal = (parsed.singular || 'Item').trim();
     return {
       Pascal:       pascal,
-      PascalPlural: (parsed.plural  || pascal + 's').trim(),
-      lower:        (parsed.lower   || pascal.toLowerCase()).trim(),
+      PascalPlural: (parsed.plural      || pascal + 's').trim(),
+      lower:        (parsed.lower       || pascal.toLowerCase()).trim(),
       lowerPlural:  (parsed.lowerPlural || pascal.toLowerCase() + 's').trim()
     };
   } catch {
-    const words = description.replace(/[^a-zA-Z ]/g, '').split(' ').filter(w => w.length > 3);
-    const noun = words[0]
-      ? words[0].charAt(0).toUpperCase() + words[0].slice(1).toLowerCase()
-      : 'Item';
+    // Smarter fallback — skip verbs/articles, grab first meaningful noun
+    const SKIP = new Set(['generate','create','build','make','develop','design','build','get','an','a','the','for','with','and','that','this','using','based','app','system','platform','tool','website','web','api']);
+    const words = description.toLowerCase().replace(/[^a-zA-Z ]/g,'').split(' ').filter(w => w.length > 2 && !SKIP.has(w));
+    const noun = words[0] ? words[0].charAt(0).toUpperCase() + words[0].slice(1) : 'Item';
     return { Pascal: noun, PascalPlural: noun + 's', lower: noun.toLowerCase(), lowerPlural: noun.toLowerCase() + 's' };
   }
 }
