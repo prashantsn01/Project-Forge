@@ -57,7 +57,7 @@ export default function SettingsPage() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {[
                   'cd backend && npm install',
-                  'cp .env.example .env  # Add NVIDIA_API_KEY',
+                  'cp .env.example .env  # Add GROQ_API_KEY',
                   'npm run dev           # Starts on port 3001',
                 ].map((s, i) => (
                   <div key={i} className="setup-step">
@@ -67,9 +67,9 @@ export default function SettingsPage() {
                 ))}
               </div>
               <p className="text-xs text-muted" style={{ marginTop: 10 }}>
-                Get a free NVIDIA NIM API key at{' '}
-                <a href="https://build.nvidia.com" target="_blank" rel="noopener noreferrer"
-                  style={{ color: 'var(--accent-electric)' }}>build.nvidia.com →</a>
+                Get a free Groq API key at{' '}
+                <a href="https://console.groq.com" target="_blank" rel="noopener noreferrer"
+                  style={{ color: 'var(--accent-electric)' }}>console.groq.com →</a>
               </p>
             </div>
           </div>
@@ -107,7 +107,7 @@ export default function SettingsPage() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               {[
                 ['Version', 'Engineer Edition v4.0.0'],
-                ['AI Engine', 'NVIDIA NIM — DeepSeek R1'],
+                ['AI Engine', 'Groq + LLaMA 3.3 70B'],
                 ['Developer', 'Prashant S Nagani'],
                 ['License', 'MIT'],
               ].map(([k, v]) => (
