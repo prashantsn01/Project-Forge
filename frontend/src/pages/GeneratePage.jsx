@@ -144,7 +144,7 @@ export default function GeneratePage() {
     '⚙️ Chunk 6/6 — Generating README, config & insights…',
     '🔗 Merging & validating all chunks — replacing placeholders…',
     '✅ Counting lines & finalizing your project…',
-    '🚀 Almost ready — this is a big one!',
+    '🚀 Almost ready — NIM can be slow, hang tight (up to 15 min)!',
   ]
 
   const generate = async () => {
@@ -167,7 +167,7 @@ export default function GeneratePage() {
           features: features.map(f => f.replace(/^[^\s]+ /, '')),
           level, commentMode, scale
         }),
-        signal: AbortSignal.timeout(480000)
+        signal: AbortSignal.timeout(900000)
       })
       const data = await res.json()
       if (!res.ok || data.error) throw new Error(data.error || 'Generation failed')
@@ -184,7 +184,10 @@ export default function GeneratePage() {
         setActiveFile(key); setActiveCode(f.code); setActiveName(f.name)
       }
     } catch (e) {
-      toast('Generation failed: ' + e.message, 'error', 7000)
+      const msg = e.name === 'TimeoutError' || e.message?.includes('timeout')
+        ? 'Generation timed out (>15 min). Try a simpler description or MVP scale.'
+        : 'Generation failed: ' + e.message
+      toast(msg, 'error', 9000)
     } finally {
       clearInterval(interval); setLoading(false); setLoadingMsg('')
     }
